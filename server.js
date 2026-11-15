@@ -168,9 +168,10 @@ async function handleImport(request, response, url) {
   if (declaredLength + currentStoredBytes() > MAX_TOTAL_STORED_BYTES) return sendError(response, 507, 'Недостаточно места для ещё одной открытой книги.');
   activeImports += 1;
   const id = crypto.randomUUID();
-  const workDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'electronic-textbook-web-'));
-  const inputPath = path.join(workDir, `source${extension}`);
+  let workDir = null;
   try {
+    workDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'electronic-textbook-web-'));
+    const inputPath = path.join(workDir, `source${extension}`);
     const size = await saveUpload(request, inputPath);
     if (size + currentStoredBytes() > MAX_TOTAL_STORED_BYTES) throw new Error('Недостаточно места для ещё одной открытой книги.');
     await verifyFileSignature(inputPath, extension);
@@ -182,7 +183,7 @@ async function handleImport(request, response, url) {
     sendJson(response, 200, { id, name, extension, size, ...parsed });
   } catch (error) {
     await cleanupUpload(id);
-    await fsp.rm(workDir, { recursive: true, force: true }).catch(() => {});
+    if (workDir) await fsp.rm(workDir, { recursive: true, force: true }).catch(() => {});
     sendError(response, 422, error.message || 'Не удалось обработать файл.');
   } finally {
     activeImports -= 1;
