@@ -28,6 +28,15 @@
           <span>Перелистывание страниц</span>
           <span>Без загрузки в интернет</span>
         </div>
+        <details class="format-details">
+          <summary>Поддержка форматов и ограничения</summary>
+          <div class="format-table-wrap">
+            <table>
+              <thead><tr><th>Формат</th><th>Статус</th><th>Что сохраняется</th><th>Ограничение</th></tr></thead>
+              <tbody id="formatSupportTable"></tbody>
+            </table>
+          </div>
+        </details>
       </div>
 
       <div class="upload-card">
@@ -38,7 +47,7 @@
         <h2>Откройте учебный файл</h2>
         <p>Выберите файл на компьютере. Он останется только в локальном приложении.</p>
         <button id="openFile" class="primary-btn" type="button">Выбрать файл <span aria-hidden="true">→</span></button>
-        <p class="upload-hint">PDF · DOCX · DOC · ODT · RTF · EPUB · TXT · Markdown · HTML</p>
+        <p id="supportedFormats" class="upload-hint">PDF · DOCX · DOC · ODT · RTF · EPUB · TXT · Markdown · HTML</p>
       </div>
     </section>
 

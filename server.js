@@ -13,6 +13,7 @@ const { promisify } = require('util');
 const mammoth = require('mammoth');
 const JSZip = require('jszip');
 const { DOMParser } = require('@xmldom/xmldom');
+const MarkdownIt = require('markdown-it');
 
 const execFileAsync = promisify(execFile);
 const ROOT = __dirname;
@@ -25,10 +26,14 @@ const UPLOAD_TTL_MS = 30 * 60 * 1000;
 const UPLOAD_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 const MAX_ARCHIVE_ENTRIES = 2_000;
 const MAX_ARCHIVE_UNCOMPRESSED_BYTES = 500 * 1024 * 1024;
-const SUPPORTED_EXTENSIONS = new Set(['.pdf', '.docx', '.docm', '.dotx', '.dotm', '.doc', '.dot', '.docb', '.odt', '.rtf', '.txt', '.md', '.html', '.htm', '.epub']);
+const FORMAT_SUPPORT = require('./src/format-support.json').formats;
+const FORMAT_BY_EXTENSION = new Map(FORMAT_SUPPORT.flatMap(format => format.extensions.map(extension => [extension, format])));
+const SUPPORTED_EXTENSIONS = new Set(FORMAT_BY_EXTENSION.keys());
 const uploads = new Map();
 const SESSION_TOKEN = crypto.randomBytes(32).toString('base64url');
 let activeImports = 0;
+let wordAvailable;
+const markdown = new MarkdownIt({ html: false, linkify: false, typographer: true, breaks: false });
 
 const docxStyleMap = [
   "p[style-name='Heading 1'] => h1:fresh", "p[style-name='Заголовок 1'] => h1:fresh", "p[style-name='Тақырып 1'] => h1:fresh",
@@ -106,7 +111,8 @@ async function saveUpload(request, target) {
 
 function isTrustedApiRequest(request) {
   const origin = request.headers.origin;
-  const expectedOrigin = `http://127.0.0.1:${PORT}`;
+  const activePort = typeof server?.address === 'function' && server.address()?.port ? server.address().port : PORT;
+  const expectedOrigin = `http://127.0.0.1:${activePort}`;
   return (!origin || origin === expectedOrigin) && request.headers['x-textbook-token'] === SESSION_TOKEN;
 }
 
@@ -178,8 +184,9 @@ async function handleImport(request, response, url) {
     const assetUrl = relativePath => `/api/asset/${id}/${relativePath.split(path.sep).map(encodeURIComponent).join('/')}`;
     const record = { id, name, extension, size, workDir, inputPath, createdAt: Date.now(), lastAccessAt: Date.now() };
     uploads.set(id, record);
-    if (extension === '.pdf') return sendJson(response, 200, { id, name, extension, size, pdfUrl: `/api/file/${id}` });
-    const parsed = await parseDocument(inputPath, extension, { workDir, assetUrl });
+    const context = { workDir, assetUrl, name, extension, formatInfo: FORMAT_BY_EXTENSION.get(extension) };
+    if (extension === '.pdf') return sendJson(response, 200, { id, name, extension, size, pdfUrl: `/api/file/${id}`, document: createPdfDocumentModel(name) });
+    const parsed = await parseDocument(inputPath, extension, context);
     sendJson(response, 200, { id, name, extension, size, ...parsed });
   } catch (error) {
     await cleanupUpload(id);
@@ -192,12 +199,21 @@ async function handleImport(request, response, url) {
 
 async function parseDocument(filePath, extension, context) {
   if (['.docx', '.docm', '.dotx'].includes(extension)) return parseDocx(filePath, context);
-  if (['.doc', '.dot', '.dotm', '.docb', '.rtf'].includes(extension)) return parseDocx(await convertLegacyWordToDocx(filePath, context.workDir), context);
-  if (extension === '.odt') return parsedDocument(await parseOdt(filePath), 'odt');
-  if (extension === '.txt') return parsedDocument(textToHtml(await fsp.readFile(filePath, 'utf8')), 'text');
-  if (extension === '.md') return parsedDocument(markdownToHtml(await fsp.readFile(filePath, 'utf8')), 'markdown');
-  if (extension === '.html' || extension === '.htm') return parsedDocument(await readHtmlFile(filePath), 'html');
-  if (extension === '.epub') return parsedDocument(await parseEpub(filePath), 'epub');
+  if (['.doc', '.dot', '.dotm', '.docb', '.rtf'].includes(extension)) {
+    await assertMicrosoftWordAvailable();
+    return parseDocx(await convertLegacyWordToDocx(filePath, context.workDir), context);
+  }
+  if (extension === '.odt') return parsedDocument(await parseOdt(filePath), 'odt', ['ODT импортируется в ограниченном режиме: сохранены заголовки и абзацы.'], context);
+  if (extension === '.txt') {
+    const decoded = await readTextFile(filePath);
+    return parsedDocument(textToHtml(decoded.text), 'text', decoded.notice ? [decoded.notice] : [], context);
+  }
+  if (extension === '.md') {
+    const decoded = await readTextFile(filePath);
+    return parsedDocument(markdown.render(decoded.text), 'markdown', decoded.notice ? [decoded.notice] : [], context);
+  }
+  if (extension === '.html' || extension === '.htm') return parsedDocument(await readHtmlFile(filePath), 'html', ['HTML открыт в безопасном режиме: скрипты, стили и внешние ресурсы отключены.'], context);
+  if (extension === '.epub') return parsedDocument(await parseEpub(filePath), 'epub', ['EPUB импортируется в ограниченном режиме: сохранены порядок глав и текст.'], context);
   throw new Error('Этот формат пока не поддерживается.');
 }
 
@@ -208,8 +224,71 @@ function removeExternalUrls(html) {
   });
 }
 
-function parsedDocument(html, format, notices = []) {
-  return { html: removeExternalUrls(html), format, notices: notices.filter(Boolean) };
+function sanitizeDocumentHtml(html) {
+  const withoutActiveElements = html
+    .replace(/<(script|style|iframe|object|embed|form|link|meta|xml)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '')
+    .replace(/<(link|meta|base)\b[^>]*\/?\s*>/gi, '');
+  const withoutDangerousAttributes = withoutActiveElements
+    .replace(/\sstyle\s*=\s*(["']).*?\1/gi, '')
+    .replace(/\son[a-z]+\s*=\s*(["']).*?\1/gi, '')
+    .replace(/\son[a-z]+\s*=\s*[^\s>]+/gi, '');
+  return removeExternalUrls(withoutDangerousAttributes);
+}
+
+function parsedDocument(html, format, notices = [], context = {}) {
+  const safeHtml = sanitizeDocumentHtml(html);
+  return {
+    format,
+    notices: notices.filter(Boolean),
+    document: createDocumentModel(safeHtml, { ...context, format, notices })
+  };
+}
+
+function createPdfDocumentModel(name) {
+  return {
+    version: 1,
+    title: path.basename(name, path.extname(name)),
+    format: 'pdf',
+    blocks: [],
+    assets: [],
+    tocHints: [],
+    notices: [],
+    capabilities: FORMAT_BY_EXTENSION.get('.pdf')
+  };
+}
+
+function createDocumentModel(html, context) {
+  const blocks = [];
+  const blockPattern = /<(h[1-6]|p|ul|ol|table|pre|blockquote)\b[^>]*>[\s\S]*?<\/\1\s*>|<img\b[^>]*>/gi;
+  let match;
+  while ((match = blockPattern.exec(html))) {
+    const fragment = match[0];
+    const tag = (/<([a-z0-9]+)/i.exec(fragment)?.[1] || 'p').toLowerCase();
+    const text = cleanMarkupText(fragment);
+    const type = /^h[1-6]$/.test(tag) ? 'heading'
+      : tag === 'ul' || tag === 'ol' ? 'list'
+        : tag === 'table' ? 'table'
+          : tag === 'img' ? 'image'
+            : tag === 'pre' ? 'code'
+              : 'paragraph';
+    if (text || type === 'image') blocks.push({ type, level: type === 'heading' ? Number(tag[1]) : undefined, text, html: fragment });
+  }
+  if (!blocks.length && cleanMarkupText(html)) blocks.push({ type: 'paragraph', text: cleanMarkupText(html), html: `<p>${escapeHtml(cleanMarkupText(html))}</p>` });
+  const title = blocks.find(block => block.type === 'heading')?.text || path.basename(context.name || 'Документ', path.extname(context.name || ''));
+  return {
+    version: 1,
+    title,
+    format: context.format,
+    blocks,
+    assets: [...new Set([...html.matchAll(/\/api\/asset\/[^"'\s>]+/g)].map(match => match[0]))],
+    tocHints: blocks.filter(block => block.type === 'heading').map(block => ({ title: block.text, level: block.level })),
+    notices: context.notices?.filter(Boolean) || [],
+    capabilities: context.formatInfo || null
+  };
+}
+
+function cleanMarkupText(html) {
+  return html.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/\s+/g, ' ').trim();
 }
 
 async function parseDocx(filePath, context) {
@@ -233,12 +312,12 @@ async function parseDocx(filePath, context) {
   if (needsWordHtml) {
     try {
       const wordHtml = await convertWordToHtml(filePath, context);
-      return parsedDocument(wordHtml, 'word-html', ['Для сохранения формул и старых рисунков использовано преобразование Microsoft Word.']);
+      return parsedDocument(wordHtml, 'word-html', ['Для сохранения формул и старых рисунков использовано преобразование Microsoft Word.'], context);
     } catch (_) {
-      return parsedDocument(result.value, 'docx', [...conversionNotices, ...mammothNotices, 'Часть объектов может не отображаться без Microsoft Word.']);
+      return parsedDocument(result.value, 'docx', [...conversionNotices, ...mammothNotices, 'Часть объектов может не отображаться без Microsoft Word.'], context);
     }
   }
-  return parsedDocument(result.value, 'docx', conversionNotices);
+  return parsedDocument(result.value, 'docx', conversionNotices, context);
 }
 
 async function convertLegacyWordToDocx(inputPath, workDir) {
@@ -267,12 +346,56 @@ async function runWordConversion(inputPath, outputPath, format) {
   }
 }
 
+async function isMicrosoftWordAvailable() {
+  if (wordAvailable !== undefined) return wordAvailable;
+  if (process.env.TEXTBOOK_DISABLE_WORD === '1' || process.platform !== 'win32') return (wordAvailable = false);
+  const roots = [process.env.ProgramFiles, process.env['ProgramFiles(x86)']].filter(Boolean);
+  const relativePaths = [
+    ['Microsoft Office', 'root', 'Office16', 'WINWORD.EXE'],
+    ['Microsoft Office', 'Office16', 'WINWORD.EXE'],
+    ['Microsoft Office', 'Office15', 'WINWORD.EXE'],
+    ['Microsoft Office', 'Office14', 'WINWORD.EXE']
+  ];
+  for (const root of roots) {
+    for (const relativePath of relativePaths) {
+      try {
+        await fsp.access(path.join(root, ...relativePath));
+        return (wordAvailable = true);
+      } catch (_) { /* continue searching */ }
+    }
+  }
+  return (wordAvailable = false);
+}
+
+async function assertMicrosoftWordAvailable() {
+  if (!(await isMicrosoftWordAvailable())) throw new Error('Для DOC, DOT, DOTM, DOCB и RTF нужен установленный Microsoft Word. Сохраните файл как DOCX или PDF либо установите Word.');
+}
+
 async function readHtmlFile(filePath) {
   const buffer = await fsp.readFile(filePath);
   const header = buffer.subarray(0, 8192).toString('latin1');
   const declared = /charset\s*=\s*["']?([^"'\s;>]+)/i.exec(header)?.[1]?.toLowerCase();
   const encodings = { 'windows-1251': 'windows-1251', cp1251: 'windows-1251', 'windows-1252': 'windows-1252', cp1252: 'windows-1252', utf8: 'utf-8', 'utf-8': 'utf-8', unicode: 'utf-16le', 'utf-16': 'utf-16le', 'utf-16le': 'utf-16le' };
-  try { return new TextDecoder(encodings[declared] || 'utf-8').decode(buffer); } catch (_) { return buffer.toString('utf8'); }
+  return decodeTextBuffer(buffer, encodings[declared]).text;
+}
+
+async function readTextFile(filePath) {
+  return decodeTextBuffer(await fsp.readFile(filePath));
+}
+
+function decodeTextBuffer(buffer, declaredEncoding) {
+  const bom = buffer.subarray(0, 3);
+  if (bom.equals(Buffer.from([0xEF, 0xBB, 0xBF]))) return { text: new TextDecoder('utf-8').decode(buffer.subarray(3)), encoding: 'utf-8' };
+  if (buffer.subarray(0, 2).equals(Buffer.from([0xFF, 0xFE]))) return { text: new TextDecoder('utf-16le').decode(buffer.subarray(2)), encoding: 'utf-16le' };
+  const sample = buffer.subarray(0, Math.min(buffer.length, 2048));
+  const oddNulls = [...sample].filter((_byte, index) => index % 2 === 1 && sample[index] === 0).length;
+  if (sample.length > 6 && oddNulls > sample.length / 6) return { text: new TextDecoder('utf-16le').decode(buffer), encoding: 'utf-16le' };
+  if (declaredEncoding) return { text: new TextDecoder(declaredEncoding).decode(buffer), encoding: declaredEncoding };
+  try {
+    return { text: new TextDecoder('utf-8', { fatal: true }).decode(buffer), encoding: 'utf-8' };
+  } catch (_) {
+    return { text: new TextDecoder('windows-1251').decode(buffer), encoding: 'windows-1251', notice: 'Кодировка Windows-1251 определена автоматически.' };
+  }
 }
 
 function rewriteOfficeAssetUrls(html, sourceDir, workDir, assetUrl) {
@@ -290,13 +413,6 @@ function escapeHtml(value) {
 
 function textToHtml(text) {
   return text.replace(/\r/g, '').split(/\n{2,}/).map(paragraph => `<p>${escapeHtml(paragraph).replace(/\n/g, '<br>')}</p>`).join('');
-}
-
-function markdownToHtml(text) {
-  return text.replace(/\r/g, '').split('\n').map(line => {
-    const heading = /^(#{1,3})\s+(.+)$/.exec(line);
-    return heading ? `<h${heading[1].length}>${escapeHtml(heading[2])}</h${heading[1].length}>` : line.trim() ? `<p>${escapeHtml(line)}</p>` : '';
-  }).join('');
 }
 
 async function parseOdt(filePath) {
@@ -324,13 +440,16 @@ async function parseEpub(filePath) {
   const root = path.posix.dirname(opfPath);
   const ids = [...opf.matchAll(/<itemref\b[^>]*idref=["']([^"']+)["'][^>]*>/g)].map(match => match[1]);
   const chapters = [];
-  for (const id of ids.slice(0, 600)) {
+  for (const [index, id] of ids.slice(0, 600).entries()) {
     const href = manifest.get(id);
     const chapterPath = href && path.posix.normalize(path.posix.join(root, href));
     const chapter = chapterPath && zip.file(chapterPath) ? await zip.file(chapterPath).async('text') : '';
     const body = /<body\b[^>]*>([\s\S]*?)<\/body>/i.exec(chapter)?.[1] || '';
     const plain = body.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-    if (plain) chapters.push(`<h1>${escapeHtml(id)}</h1>${textToHtml(plain)}`);
+    const title = /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(chapter)?.[1]?.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+      || /<h1\b[^>]*>([\s\S]*?)<\/h1>/i.exec(body)?.[1]?.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+      || `Глава ${index + 1}`;
+    if (plain) chapters.push(`<h1>${escapeHtml(title)}</h1>${textToHtml(plain)}`);
   }
   return chapters.join('') || '<p>В EPUB не найден текст.</p>';
 }
@@ -348,6 +467,7 @@ const server = http.createServer(async (request, response) => {
   try {
     const url = new URL(request.url, `http://${request.headers.host || '127.0.0.1'}`);
     if (request.method === 'GET' && url.pathname === '/api/session') return sendJson(response, 200, { token: SESSION_TOKEN });
+    if (request.method === 'GET' && url.pathname === '/api/capabilities') return sendJson(response, 200, { formats: FORMAT_SUPPORT, wordConversionAvailable: await isMicrosoftWordAvailable() });
     if (request.method === 'POST' && url.pathname === '/api/import') return handleImport(request, response, url);
     if (request.method === 'DELETE' && /^\/api\/import\/[^/]+$/.test(url.pathname)) {
       if (!isTrustedApiRequest(request)) return sendError(response, 403, 'Запрос отклонён: откройте файл через сайт учебника.');

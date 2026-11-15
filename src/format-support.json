@@ -1,0 +1,14 @@
+{
+  "formats": [
+    { "extensions": [".pdf"], "label": "PDF", "status": "supported", "preserves": "Страницы и встроенные bookmarks", "limitation": "Текст отображается как страница; поиск и выделение будут добавлены позже" },
+    { "extensions": [".docx"], "label": "DOCX", "status": "supported", "preserves": "Заголовки, абзацы, списки, таблицы и доступные изображения", "limitation": "Сложные формулы и OLE-объекты конвертируются через Word при наличии" },
+    { "extensions": [".docm"], "label": "DOCM", "status": "limited", "preserves": "Текст и безопасная часть документа", "limitation": "Макросы никогда не запускаются; сложные объекты могут быть упрощены" },
+    { "extensions": [".dotx"], "label": "DOTX", "status": "limited", "preserves": "Текст шаблона", "limitation": "Это шаблон Word, а не готовая книга" },
+    { "extensions": [".doc", ".dot", ".dotm", ".docb", ".rtf"], "label": "DOC / DOT / DOTM / DOCB / RTF", "status": "requires-word", "preserves": "Текст и доступные изображения после конвертации", "limitation": "Нужен установленный Microsoft Word; макросы отключены" },
+    { "extensions": [".odt"], "label": "ODT", "status": "limited", "preserves": "Заголовки и абзацы", "limitation": "Таблицы, списки, изображения и сложные стили LibreOffice пока не переносятся" },
+    { "extensions": [".epub"], "label": "EPUB", "status": "limited", "preserves": "Порядок глав spine и текст глав", "limitation": "Оглавление, изображения, интерактивные элементы и сложные стили пока не переносятся" },
+    { "extensions": [".txt"], "label": "TXT", "status": "supported", "preserves": "Абзацы и UTF-8 / UTF-16LE / Windows-1251", "limitation": "Форматирование в исходном TXT отсутствует" },
+    { "extensions": [".md"], "label": "Markdown", "status": "supported", "preserves": "Заголовки, списки, выделение, ссылки и код", "limitation": "Внешние ссылки отключаются в режиме локального чтения" },
+    { "extensions": [".html", ".htm"], "label": "HTML", "status": "limited", "preserves": "Безопасные текстовые блоки, таблицы и локальные изображения", "limitation": "Скрипты, внешние ресурсы и стили документа удаляются" }
+  ]
+}

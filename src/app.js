@@ -16,11 +16,49 @@ if (!Map.prototype.getOrInsertComputed) {
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/node_modules/pdfjs-dist/build/pdf.worker.mjs';
 const $ = selector => document.querySelector(selector);
 const cleanText = value => value.replace(/\s+/g, ' ').trim();
-const supportedExtensions = new Set(['.pdf', '.docx', '.docm', '.dotx', '.dotm', '.doc', '.dot', '.docb', '.odt', '.rtf', '.txt', '.md', '.html', '.htm', '.epub']);
+let supportedExtensions = new Set(['.pdf', '.docx', '.docm', '.dotx', '.dotm', '.doc', '.dot', '.docb', '.odt', '.rtf', '.txt', '.md', '.html', '.htm', '.epub']);
+let formatByExtension = new Map(), serverCapabilities = null;
 let pages = [], toc = [], pageFlip = null, importing = false, sourceBlocks = [], documentLayout = null;
 let importNotices = [], resizeTimer = null;
 const renderedPdfPages = new Set();
 let sessionToken = null, currentImportId = null;
+
+void loadFormatSupport();
+
+async function loadFormatSupport() {
+  try {
+    const response = await fetch('/src/format-support.json', { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok || !Array.isArray(data.formats)) throw new Error('Файл поддержки форматов недоступен.');
+    formatByExtension = new Map(data.formats.flatMap(format => format.extensions.map(extension => [extension, format])));
+    supportedExtensions = new Set(formatByExtension.keys());
+    $('#fileInput').accept = [...supportedExtensions].join(',');
+    renderFormatSupport(data.formats);
+  } catch (error) {
+    console.warn('Не удалось загрузить информацию о форматах:', error);
+  }
+}
+
+async function getServerCapabilities() {
+  if (serverCapabilities) return serverCapabilities;
+  const response = await fetch('/api/capabilities', { cache: 'no-store' });
+  const data = await response.json();
+  if (!response.ok) throw new Error('Не удалось проверить поддержку Microsoft Word.');
+  serverCapabilities = data;
+  return data;
+}
+
+function renderFormatSupport(formats) {
+  const list = $('#supportedFormats');
+  if (list) list.textContent = formats.flatMap(format => format.extensions).map(extension => extension.slice(1).toUpperCase()).join(' · ');
+  const table = $('#formatSupportTable');
+  if (!table) return;
+  table.innerHTML = formats.map(format => `<tr><td>${format.label}</td><td>${formatStatusLabel(format.status)}</td><td>${format.preserves}</td><td>${format.limitation}</td></tr>`).join('');
+}
+
+function formatStatusLabel(status) {
+  return ({ supported: 'Поддерживается', limited: 'Ограниченно', 'requires-word': 'Нужен Word' })[status] || 'Неизвестно';
+}
 
 $('#openFile').onclick = chooseFile;
 $('#newFile').onclick = chooseFile;
@@ -84,7 +122,7 @@ async function importFile(selectedFile) {
   if (importing) return;
   const extension = `.${selectedFile.name.split('.').pop()?.toLowerCase() || ''}`;
   if (!supportedExtensions.has(extension)) {
-    alert('Поддерживаются PDF, Word (DOC/DOCX/DOCM), ODT, RTF, EPUB, TXT, Markdown и HTML.');
+    alert('Этот формат пока не поддерживается. Откройте таблицу «Поддержка форматов» на стартовой странице.');
     return;
   }
   importing = true;
@@ -92,6 +130,11 @@ async function importFile(selectedFile) {
   $('#openFile').disabled = true;
   $('#newFile').disabled = true;
   try {
+    const format = formatByExtension.get(extension);
+    if (format?.status === 'requires-word') {
+      const capabilities = await getServerCapabilities();
+      if (!capabilities.wordConversionAvailable) throw new Error(`Для ${format.label} нужен установленный Microsoft Word. Сохраните файл как DOCX или PDF либо установите Word.`);
+    }
     const token = await getSessionToken();
     const response = await fetch(`/api/import?name=${encodeURIComponent(selectedFile.name)}`, {
       method: 'POST',
@@ -122,10 +165,15 @@ async function importFile(selectedFile) {
 }
 
 async function loadDocument(file) {
-  const html = file.html;
-  importNotices = file.notices || [];
+  const model = file.document;
+  if (!model?.blocks?.length) throw new Error('Сервер не вернул модель документа. Попробуйте открыть файл ещё раз.');
+  importNotices = [...(file.notices || []), ...(model.notices || [])];
   const holder = document.createElement('div');
-  holder.innerHTML = sanitizeImportedHtml(html);
+  model.blocks.forEach(block => {
+    const template = document.createElement('template');
+    template.innerHTML = sanitizeImportedHtml(block.html || '');
+    holder.append(template.content);
+  });
   sourceBlocks = collectSourceBlocks(holder);
   documentLayout = getPageLayout();
   ({ pages, toc } = paginateDocument(sourceBlocks, documentLayout));
