@@ -20,6 +20,7 @@ const supportedExtensions = new Set(['.pdf', '.docx', '.docm', '.dotx', '.dotm',
 let pages = [], toc = [], pageFlip = null, importing = false, sourceBlocks = [], documentLayout = null;
 let importNotices = [], resizeTimer = null;
 const renderedPdfPages = new Set();
+let sessionToken = null, currentImportId = null;
 
 $('#openFile').onclick = chooseFile;
 $('#newFile').onclick = chooseFile;
@@ -57,6 +58,28 @@ async function chooseFile() {
   $('#fileInput').click();
 }
 
+async function getSessionToken() {
+  if (sessionToken) return sessionToken;
+  const response = await fetch('/api/session', { cache: 'no-store' });
+  const data = await response.json();
+  if (!response.ok || !data.token) throw new Error('Не удалось установить защищённое соединение с локальным сервером. Перезапустите сайт.');
+  sessionToken = data.token;
+  return sessionToken;
+}
+
+async function releaseImport(id) {
+  if (!id || !sessionToken) return;
+  try {
+    await fetch(`/api/import/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: { 'X-Textbook-Token': sessionToken },
+      keepalive: true
+    });
+  } catch (_) {
+    // The server removes stale imports automatically; a failed cleanup request must not interrupt reading.
+  }
+}
+
 async function importFile(selectedFile) {
   if (importing) return;
   const extension = `.${selectedFile.name.split('.').pop()?.toLowerCase() || ''}`;
@@ -69,7 +92,12 @@ async function importFile(selectedFile) {
   $('#openFile').disabled = true;
   $('#newFile').disabled = true;
   try {
-    const response = await fetch(`/api/import?name=${encodeURIComponent(selectedFile.name)}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: selectedFile });
+    const token = await getSessionToken();
+    const response = await fetch(`/api/import?name=${encodeURIComponent(selectedFile.name)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Textbook-Token': token },
+      body: selectedFile
+    });
     const imported = await response.json();
     if (!response.ok) throw new Error(imported.error || 'Сервер не смог прочитать файл.');
     const loading = imported.extension === '.pdf' ? loadPdf(imported) : loadDocument(imported);
@@ -80,6 +108,9 @@ async function importFile(selectedFile) {
     renderToc();
     renderImportNotice();
     createBook();
+    const previousImportId = currentImportId;
+    currentImportId = imported.id;
+    if (previousImportId && previousImportId !== currentImportId) void releaseImport(previousImportId);
   } catch (error) {
     alert(`Не удалось открыть файл. Проверьте формат документа.\n\n${error.message}`);
   } finally {
@@ -111,6 +142,13 @@ function sanitizeImportedHtml(html) {
   holder.querySelectorAll('*').forEach(node => [...node.attributes].forEach(attribute => {
     if (attribute.name === 'style' || attribute.name.startsWith('on') || /^javascript:/i.test(attribute.value)) node.removeAttribute(attribute.name);
   }));
+  holder.querySelectorAll('[src], [srcset], [href]').forEach(node => {
+    for (const name of ['src', 'srcset', 'href']) {
+      const value = node.getAttribute(name);
+      if (!value) continue;
+      if (!value.startsWith('/api/asset/') && !value.startsWith('#')) node.removeAttribute(name);
+    }
+  });
   return holder.innerHTML;
 }
 
@@ -328,7 +366,7 @@ async function loadPdf(file) {
   sourceBlocks = [];
   documentLayout = null;
   importNotices = [];
-  const pdf = await pdfjsLib.getDocument({ url: file.pdfUrl }).promise;
+  const pdf = await pdfjsLib.getDocument({ url: file.pdfUrl, isEvalSupported: false, enableXfa: false }).promise;
   if (pdf.numPages > 1200) throw new Error('PDF содержит больше 1200 страниц. Разделите материал на части.');
   pages = Array.from({ length: pdf.numPages }, (_, index) => ({ type: 'pdf', pdf, pageNumber: index + 1 }));
   toc = [];

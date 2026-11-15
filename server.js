@@ -10,17 +10,25 @@ const { Transform } = require('stream');
 const { pipeline } = require('stream/promises');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
-const { pathToFileURL } = require('url');
 const mammoth = require('mammoth');
 const JSZip = require('jszip');
 const { DOMParser } = require('@xmldom/xmldom');
 
 const execFileAsync = promisify(execFile);
 const ROOT = __dirname;
-const PORT = Number(process.env.PORT || 4173);
+const PORT = process.env.PORT ? Number(process.env.PORT) : 4173;
 const MAX_FILE_SIZE = 250 * 1024 * 1024;
+const MAX_TOTAL_STORED_BYTES = 750 * 1024 * 1024;
+const MAX_ACTIVE_UPLOADS = 10;
+const MAX_CONCURRENT_IMPORTS = 2;
+const UPLOAD_TTL_MS = 30 * 60 * 1000;
+const UPLOAD_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+const MAX_ARCHIVE_ENTRIES = 2_000;
+const MAX_ARCHIVE_UNCOMPRESSED_BYTES = 500 * 1024 * 1024;
 const SUPPORTED_EXTENSIONS = new Set(['.pdf', '.docx', '.docm', '.dotx', '.dotm', '.doc', '.dot', '.docb', '.odt', '.rtf', '.txt', '.md', '.html', '.htm', '.epub']);
 const uploads = new Map();
+const SESSION_TOKEN = crypto.randomBytes(32).toString('base64url');
+let activeImports = 0;
 
 const docxStyleMap = [
   "p[style-name='Heading 1'] => h1:fresh", "p[style-name='Заголовок 1'] => h1:fresh", "p[style-name='Тақырып 1'] => h1:fresh",
@@ -36,9 +44,21 @@ const mimeTypes = {
   '.woff': 'font/woff', '.woff2': 'font/woff2'
 };
 
+function securityHeaders() {
+  return {
+    'Content-Security-Policy': "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:",
+    'Cross-Origin-Opener-Policy': 'same-origin',
+    'Cross-Origin-Resource-Policy': 'same-origin',
+    'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=()',
+    'Referrer-Policy': 'no-referrer',
+    'X-Content-Type-Options': 'nosniff',
+    'Cache-Control': 'no-store'
+  };
+}
+
 function sendJson(response, status, data) {
   const body = Buffer.from(JSON.stringify(data));
-  response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': body.length, 'Cache-Control': 'no-store' });
+  response.writeHead(status, { ...securityHeaders(), 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': body.length });
   response.end(body);
 }
 
@@ -53,7 +73,7 @@ function isInside(base, target) {
 
 async function streamFile(request, response, filePath, allowRange = false) {
   const stat = await fsp.stat(filePath);
-  const headers = { 'Content-Type': mimeTypes[path.extname(filePath).toLowerCase()] || 'application/octet-stream', 'X-Content-Type-Options': 'nosniff' };
+  const headers = { ...securityHeaders(), 'Content-Type': mimeTypes[path.extname(filePath).toLowerCase()] || 'application/octet-stream' };
   if (allowRange && request.headers.range) {
     const match = /bytes=(\d+)-(\d*)/.exec(request.headers.range);
     if (!match) return sendError(response, 416, 'Некорректный диапазон файла.');
@@ -84,26 +104,88 @@ async function saveUpload(request, target) {
   return received;
 }
 
+function isTrustedApiRequest(request) {
+  const origin = request.headers.origin;
+  const expectedOrigin = `http://127.0.0.1:${PORT}`;
+  return (!origin || origin === expectedOrigin) && request.headers['x-textbook-token'] === SESSION_TOKEN;
+}
+
+function currentStoredBytes() {
+  return [...uploads.values()].reduce((total, record) => total + record.size, 0);
+}
+
+function getUpload(id) {
+  const record = uploads.get(id);
+  if (record) record.lastAccessAt = Date.now();
+  return record;
+}
+
+async function cleanupUpload(id) {
+  const record = uploads.get(id);
+  if (!record) return false;
+  uploads.delete(id);
+  await fsp.rm(record.workDir, { recursive: true, force: true }).catch(() => {});
+  return true;
+}
+
+async function sweepExpiredUploads() {
+  const expired = [...uploads.values()]
+    .filter(record => Date.now() - record.lastAccessAt > UPLOAD_TTL_MS)
+    .map(record => cleanupUpload(record.id));
+  await Promise.all(expired);
+}
+
+async function verifyFileSignature(filePath, extension) {
+  const handle = await fsp.open(filePath, 'r');
+  const header = Buffer.alloc(16);
+  try { await handle.read(header, 0, header.length, 0); } finally { await handle.close(); }
+  const hasPrefix = value => header.subarray(0, value.length).equals(value);
+  const isZip = hasPrefix(Buffer.from('PK\x03\x04')) || hasPrefix(Buffer.from('PK\x05\x06'));
+  const isCompoundDocument = hasPrefix(Buffer.from([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]));
+  const isRtf = header.toString('ascii').replace(/^\uFEFF/, '').startsWith('{\\rtf');
+  if (extension === '.pdf' && !hasPrefix(Buffer.from('%PDF-'))) throw new Error('Расширение PDF не соответствует содержимому файла.');
+  if (['.docx', '.docm', '.dotx', '.dotm', '.odt', '.epub'].includes(extension) && !isZip) throw new Error('Расширение Office/EPUB не соответствует содержимому файла.');
+  if (['.doc', '.dot', '.docb'].includes(extension) && !isCompoundDocument) throw new Error('Расширение старого Word не соответствует содержимому файла.');
+  if (extension === '.rtf' && !isRtf) throw new Error('Расширение RTF не соответствует содержимому файла.');
+}
+
+function validateArchive(zip, label) {
+  const entries = Object.values(zip.files);
+  if (entries.length > MAX_ARCHIVE_ENTRIES) throw new Error(`${label} содержит слишком много файлов.`);
+  const declaredSize = entries.reduce((size, entry) => size + Number(entry._data?.uncompressedSize || 0), 0);
+  if (declaredSize > MAX_ARCHIVE_UNCOMPRESSED_BYTES) throw new Error(`${label} слишком велик после распаковки.`);
+}
+
 async function handleImport(request, response, url) {
+  if (!isTrustedApiRequest(request)) return sendError(response, 403, 'Запрос отклонён: откройте файл через сайт учебника.');
+  if (activeImports >= MAX_CONCURRENT_IMPORTS) return sendError(response, 429, 'Сейчас уже обрабатываются другие файлы. Повторите попытку через несколько секунд.');
+  if (uploads.size >= MAX_ACTIVE_UPLOADS) return sendError(response, 429, 'Открыто слишком много книг. Закройте или замените текущую книгу.');
   const requestedName = url.searchParams.get('name') || '';
   const name = path.basename(requestedName);
   const extension = path.extname(name).toLowerCase();
   if (!name || name !== requestedName || !SUPPORTED_EXTENSIONS.has(extension)) return sendError(response, 400, 'Выберите поддерживаемый документ.');
+  const declaredLength = Number(request.headers['content-length'] || 0);
+  if (declaredLength + currentStoredBytes() > MAX_TOTAL_STORED_BYTES) return sendError(response, 507, 'Недостаточно места для ещё одной открытой книги.');
+  activeImports += 1;
   const id = crypto.randomUUID();
   const workDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'electronic-textbook-web-'));
   const inputPath = path.join(workDir, `source${extension}`);
   try {
     const size = await saveUpload(request, inputPath);
+    if (size + currentStoredBytes() > MAX_TOTAL_STORED_BYTES) throw new Error('Недостаточно места для ещё одной открытой книги.');
+    await verifyFileSignature(inputPath, extension);
     const assetUrl = relativePath => `/api/asset/${id}/${relativePath.split(path.sep).map(encodeURIComponent).join('/')}`;
-    const record = { id, name, extension, size, workDir, inputPath };
+    const record = { id, name, extension, size, workDir, inputPath, createdAt: Date.now(), lastAccessAt: Date.now() };
     uploads.set(id, record);
     if (extension === '.pdf') return sendJson(response, 200, { id, name, extension, size, pdfUrl: `/api/file/${id}` });
     const parsed = await parseDocument(inputPath, extension, { workDir, assetUrl });
     sendJson(response, 200, { id, name, extension, size, ...parsed });
   } catch (error) {
-    uploads.delete(id);
+    await cleanupUpload(id);
     await fsp.rm(workDir, { recursive: true, force: true }).catch(() => {});
     sendError(response, 422, error.message || 'Не удалось обработать файл.');
+  } finally {
+    activeImports -= 1;
   }
 }
 
@@ -118,8 +200,15 @@ async function parseDocument(filePath, extension, context) {
   throw new Error('Этот формат пока не поддерживается.');
 }
 
+function removeExternalUrls(html) {
+  return html.replace(/\s(?:src|srcset|href)\s*=\s*(["'])(.*?)\1/gi, (match, _quote, value) => {
+    if (value.startsWith('/api/asset/') || value.startsWith('#')) return match;
+    return '';
+  });
+}
+
 function parsedDocument(html, format, notices = []) {
-  return { html, format, notices: notices.filter(Boolean) };
+  return { html: removeExternalUrls(html), format, notices: notices.filter(Boolean) };
 }
 
 async function parseDocx(filePath, context) {
@@ -211,6 +300,7 @@ function markdownToHtml(text) {
 
 async function parseOdt(filePath) {
   const zip = await JSZip.loadAsync(await fsp.readFile(filePath));
+  validateArchive(zip, 'ODT');
   const content = await zip.file('content.xml')?.async('text');
   if (!content) throw new Error('В ODT отсутствует content.xml.');
   const xml = new DOMParser().parseFromString(content, 'text/xml');
@@ -223,6 +313,7 @@ async function parseOdt(filePath) {
 
 async function parseEpub(filePath) {
   const zip = await JSZip.loadAsync(await fsp.readFile(filePath));
+  validateArchive(zip, 'EPUB');
   const container = await zip.file('META-INF/container.xml')?.async('text');
   const opfPath = /full-path=["']([^"']+)["']/.exec(container || '')?.[1];
   if (!opfPath) throw new Error('Не удалось прочитать структуру EPUB.');
@@ -255,15 +346,21 @@ async function serveStatic(request, response, pathname) {
 const server = http.createServer(async (request, response) => {
   try {
     const url = new URL(request.url, `http://${request.headers.host || '127.0.0.1'}`);
+    if (request.method === 'GET' && url.pathname === '/api/session') return sendJson(response, 200, { token: SESSION_TOKEN });
     if (request.method === 'POST' && url.pathname === '/api/import') return handleImport(request, response, url);
+    if (request.method === 'DELETE' && /^\/api\/import\/[^/]+$/.test(url.pathname)) {
+      if (!isTrustedApiRequest(request)) return sendError(response, 403, 'Запрос отклонён: откройте файл через сайт учебника.');
+      const released = await cleanupUpload(url.pathname.split('/').pop());
+      return sendJson(response, 200, { released });
+    }
     if (request.method === 'GET' && /^\/api\/file\/[^/]+$/.test(url.pathname)) {
-      const record = uploads.get(url.pathname.split('/').pop());
+      const record = getUpload(url.pathname.split('/').pop());
       if (!record) return sendError(response, 404, 'Файл больше недоступен.');
       return streamFile(request, response, record.inputPath, true);
     }
     if (request.method === 'GET' && url.pathname.startsWith('/api/asset/')) {
       const [, , , id, ...segments] = url.pathname.split('/');
-      const record = uploads.get(id);
+      const record = getUpload(id);
       const relative = segments.map(decodeURIComponent).join(path.sep);
       const assetPath = record && path.resolve(record.workDir, relative);
       if (!record || !isInside(record.workDir, assetPath)) return sendError(response, 404, 'Ресурс не найден.');
@@ -278,15 +375,24 @@ const server = http.createServer(async (request, response) => {
   }
 });
 
-function cleanup() {
-  for (const record of uploads.values()) fsp.rm(record.workDir, { recursive: true, force: true }).catch(() => {});
-}
+async function cleanup() { await Promise.all([...uploads.keys()].map(cleanupUpload)); }
+
+const sweepTimer = setInterval(() => { sweepExpiredUploads().catch(error => console.error('Не удалось очистить временные файлы:', error)); }, UPLOAD_SWEEP_INTERVAL_MS);
+sweepTimer.unref();
 
 server.listen(PORT, '127.0.0.1', () => {
-  const address = `http://127.0.0.1:${PORT}`;
+  const address = `http://127.0.0.1:${server.address().port}`;
   console.log(`Электронный учебник запущен: ${address}`);
-  if (process.platform === 'win32') execFile('cmd.exe', ['/c', 'start', '', address], { windowsHide: true }, () => {});
+  if (process.platform === 'win32' && process.env.TEXTBOOK_NO_BROWSER !== '1') execFile('cmd.exe', ['/c', 'start', '', address], { windowsHide: true }, () => {});
 });
 server.on('error', error => { console.error(`Сервер не запущен: ${error.message}`); process.exitCode = 1; });
-process.on('SIGINT', () => { cleanup(); server.close(() => process.exit()); });
-process.on('SIGTERM', () => { cleanup(); server.close(() => process.exit()); });
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  clearInterval(sweepTimer);
+  await cleanup();
+  server.close(() => process.exit());
+}
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
