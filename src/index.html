@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#173c36">
+  <title>Электронный учебник</title>
+  <link rel="stylesheet" href="src/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="На главную страницу">
+      <span class="brand-mark" aria-hidden="true">Е</span>
+      <span>Электронный учебник</span>
+    </a>
+    <div id="bookName" class="book-name">Новая книга</div>
+    <button id="newFile" class="outline-btn" type="button">Открыть другой файл</button>
+  </header>
+
+  <main>
+    <section id="welcome" class="welcome" aria-labelledby="welcomeTitle">
+      <div class="welcome-intro">
+        <p class="eyebrow">Локальный интерактивный читатель</p>
+        <h1 id="welcomeTitle">Превратите учебный материал<br>в <em>удобную книгу</em></h1>
+        <p class="welcome-lead">Откройте Word, PDF или другой учебный файл. Сайт создаст содержание, страницы и эффект перелистывания прямо на вашем компьютере.</p>
+        <div class="feature-list" aria-label="Возможности">
+          <span>Содержание с переходами</span>
+          <span>Перелистывание страниц</span>
+          <span>Без загрузки в интернет</span>
+        </div>
+      </div>
+
+      <div class="upload-card">
+        <div class="book-preview" aria-hidden="true">
+          <div class="book-preview-lines"><i></i><i></i><i></i><i></i></div>
+          <span>Учебник</span>
+        </div>
+        <h2>Откройте учебный файл</h2>
+        <p>Выберите файл на компьютере. Он останется только в локальном приложении.</p>
+        <button id="openFile" class="primary-btn" type="button">Выбрать файл <span aria-hidden="true">→</span></button>
+        <p class="upload-hint">PDF · DOCX · DOC · ODT · RTF · EPUB · TXT · Markdown · HTML</p>
+      </div>
+    </section>
+
+    <section id="reader" hidden aria-label="Чтение учебника">
+      <aside id="tocPanel" aria-label="Содержание учебника">
+        <div class="toc-top">
+          <div><span class="toc-label">НАВИГАЦИЯ</span><strong>Содержание</strong></div>
+          <button id="closeToc" type="button" title="Скрыть содержание" aria-label="Скрыть содержание">×</button>
+        </div>
+        <label class="search-label" for="tocSearch">Поиск по содержанию</label>
+        <input id="tocSearch" type="search" placeholder="Найти тему">
+        <nav id="toc" aria-label="Темы учебника"></nav>
+      </aside>
+
+      <div class="reading-area">
+        <button id="tocToggle" class="toc-toggle" type="button" aria-controls="tocPanel">☰ <span>Содержание</span></button>
+        <p id="importNotice" class="import-notice" hidden></p>
+        <div class="book-stage">
+          <div id="book" class="book" aria-label="Страницы учебника"></div>
+        </div>
+        <div class="controls" aria-label="Навигация по страницам">
+          <button id="prev" class="round" type="button" title="Предыдущая страница" aria-label="Предыдущая страница">←</button>
+          <span id="pageCounter" aria-live="polite">1 / 1</span>
+          <label class="jump-label">Страница <input id="pageJump" type="number" min="1" value="1" inputmode="numeric"></label>
+          <button id="goPage" class="round small-round" type="button" title="Перейти к странице" aria-label="Перейти к странице">↵</button>
+          <button id="next" class="round" type="button" title="Следующая страница" aria-label="Следующая страница">→</button>
+        </div>
+        <p class="reader-tip">Листайте кнопками, стрелками клавиатуры или потяните угол страницы.</p>
+      </div>
+    </section>
+  </main>
+
+  <input id="fileInput" class="file-input" type="file" aria-label="Выбор учебного файла" accept=".pdf,.docx,.docm,.dotx,.dotm,.doc,.dot,.docb,.odt,.rtf,.txt,.md,.html,.htm,.epub">
+  <div id="loading" hidden role="status" aria-live="polite"><div class="loader"></div><strong>Готовим вашу книгу…</strong><p>Анализируем документ и создаём удобные страницы.</p></div>
+  <script type="module" src="src/app.js"></script>
+</body>
+</html>

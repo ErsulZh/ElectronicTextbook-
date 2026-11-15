@@ -1,0 +1,17 @@
+{
+  "name": "electronic-textbook",
+  "version": "1.5.0",
+  "description": "Local website for reading PDF, Word and document formats as an interactive book",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js && node --check src/app.js"
+  },
+  "dependencies": {
+    "@xmldom/xmldom": "^0.8.11",
+    "jszip": "^3.10.1",
+    "mammoth": "^1.11.0",
+    "page-flip": "^2.0.7",
+    "pdfjs-dist": "^5.4.394"
+  }
+}
