@@ -8,6 +8,7 @@ const { chromium } = require('playwright-core');
 
 const bravePath = 'C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe';
 const sourceFile = path.join(process.cwd(), 'Тест', 'Казакша электр аппараттары КІТАП 27.10.docx');
+const pdfFile = path.join(process.cwd(), 'Тест', 'УМКД Android -де мобильді қосымшаларды әзірлеу 03.09.2026.pdf');
 const contentsFixture = path.join(process.cwd(), 'fixtures', 'pagination-contents.html');
 const semanticsFixture = path.join(process.cwd(), 'fixtures', 'pagination-semantics.html');
 
@@ -49,6 +50,22 @@ async function importAndWait(page, fileInput, expectedText) {
   await page.locator('#book').waitFor({ state: 'visible' });
   await page.waitForFunction(expected => document.querySelector('#book')?.textContent.includes(expected), expectedText, { timeout: 120_000 });
   await page.waitForTimeout(350);
+}
+
+async function importPdfAndWait(page, filePath) {
+  await page.locator('#fileInput').setInputFiles(filePath);
+  await page.locator('#loading').waitFor({ state: 'hidden', timeout: 120_000 });
+  await page.locator('#reader').waitFor({ state: 'visible' });
+  await page.waitForFunction(() => /^\d+\s*\/\s*\d+$/.test(document.querySelector('#pageCounter')?.textContent || ''), null, { timeout: 120_000 });
+  await page.waitForFunction(() => Boolean(document.querySelector('.book-content canvas')), null, { timeout: 120_000 });
+  await page.waitForTimeout(300);
+}
+
+async function pageCounter(page) {
+  const value = await page.locator('#pageCounter').textContent();
+  const match = /^(\d+)\s*\/\s*(\d+)$/.exec((value || '').trim());
+  assert.ok(match, `Не удалось прочитать номер страницы: ${value}`);
+  return { current: Number(match[1]), total: Number(match[2]) };
 }
 
 async function readerReport(page) {
@@ -93,7 +110,7 @@ async function assertTocNavigation(page, indexes) {
 
 async function main() {
   if (!fs.existsSync(bravePath)) throw new Error('Brave не найден: browser-тест нельзя запустить.');
-  for (const file of [sourceFile, contentsFixture, semanticsFixture]) {
+  for (const file of [sourceFile, pdfFile, contentsFixture, semanticsFixture]) {
     if (!fs.existsSync(file)) throw new Error(`Нет файла для browser-теста: ${file}`);
   }
   const server = await startServer();
@@ -106,9 +123,14 @@ async function main() {
     const contentsReport = await readerReport(page);
     assert.deepEqual(contentsReport.topics, ['Введение', 'Реальная тема'], 'Напечатанное содержание ошибочно попало в TOC.');
     await assertTocNavigation(page, [0, 1]);
+    await page.locator('#pageJump').fill('2');
+    await page.locator('#goPage').click();
+    await page.waitForTimeout(900);
+    assert.equal((await pageCounter(page)).current, 2, 'Не удалось перейти ко второй странице первой книги.');
 
     await importAndWait(page, semanticsFixture, 'Проверка форматирования');
     const semanticsReport = await readerReport(page);
+    assert.equal((await pageCounter(page)).current, 1, 'Новая книга должна открываться с первой страницы, а не наследовать прежнюю.');
     assert.equal(semanticsReport.overflows.length, 0, 'Тестовый HTML имеет переполнение.');
     const semantics = await page.evaluate(() => ({
       strong: Boolean(document.querySelector('.book-content strong')),
@@ -161,14 +183,58 @@ async function main() {
     assert.ok(mobileGeometry.documentWidth <= mobileGeometry.pageWidth, `На телефоне появилась горизонтальная прокрутка: ${JSON.stringify(mobileGeometry)}`);
     assert.ok(mobileGeometry.bookFits && mobileGeometry.readerFits, `Книга не помещается на экран телефона: ${JSON.stringify(mobileGeometry)}`);
     assert.equal(mobileGeometry.tocHidden, true, 'На телефоне оглавление перекрывает книгу до нажатия кнопки.');
+    assert.equal(await page.locator('#tocToggle').getAttribute('aria-expanded'), 'false', 'Скрытое содержание не сообщается как закрытое.');
     await page.locator('#tocToggle').click();
     await page.locator('#tocPanel').waitFor({ state: 'visible' });
+    await page.waitForTimeout(50);
+    assert.equal(await page.locator('#tocToggle').getAttribute('aria-expanded'), 'true', 'Открытое содержание не сообщается как раскрытое.');
+    assert.equal(await page.evaluate(() => document.activeElement?.id), 'tocSearch', 'При открытии содержания фокус не переходит к поиску тем.');
+    await page.locator('#closeToc').click();
+    assert.equal(await page.locator('#tocPanel').isVisible(), false, 'Кнопка закрытия не скрывает содержание.');
+    assert.equal(await page.evaluate(() => document.activeElement?.id), 'tocToggle', 'После закрытия содержания фокус не вернулся к кнопке открытия.');
+
+    await page.setViewportSize({ width: 1440, height: 980 });
+    await page.waitForTimeout(1_100);
+    await importPdfAndWait(page, pdfFile);
+    const pdfStart = await pageCounter(page);
+    assert.ok(pdfStart.total > 1, 'Реальный PDF не содержит нескольких страниц.');
+    assert.equal(pdfStart.current, 1, 'PDF должен открываться с первой страницы.');
+    await page.locator('#next').click();
+    await page.waitForTimeout(900);
+    assert.equal((await pageCounter(page)).current, 2, 'Кнопка Next не листает реальный PDF.');
+    const targetPdfPage = Math.min(10, pdfStart.total);
+    await page.locator('#pageJump').fill(String(targetPdfPage));
+    await page.locator('#goPage').click();
+    await page.waitForTimeout(900);
+    assert.equal((await pageCounter(page)).current, targetPdfPage, 'Переход по номеру страницы PDF не работает.');
+    assert.ok(await page.locator('.book-content canvas').count() > 0, 'PDF не отрисовывает ни одной canvas-страницы.');
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForTimeout(1_100);
+    const pdfMobile = await page.evaluate(() => {
+      const book = document.querySelector('#book')?.getBoundingClientRect();
+      return {
+        pageWidth: window.innerWidth,
+        documentWidth: document.documentElement.scrollWidth,
+        bookFits: Boolean(book && book.left >= -1 && book.right <= window.innerWidth + 1),
+        canvasVisible: Boolean(document.querySelector('.book-content canvas')),
+        tocHidden: document.querySelector('#tocPanel')?.hidden === true
+      };
+    });
+    assert.equal((await pageCounter(page)).current, targetPdfPage, 'Изменение размера сбросило PDF на другую страницу.');
+    assert.ok(pdfMobile.documentWidth <= pdfMobile.pageWidth && pdfMobile.bookFits, `PDF не помещается на мобильном экране: ${JSON.stringify(pdfMobile)}`);
+    assert.ok(pdfMobile.canvasVisible, 'После изменения размера PDF не отрисован.');
+    assert.equal(pdfMobile.tocHidden, true, 'На телефоне PDF открывается с перекрывающим содержанием.');
+
+    await importAndWait(page, contentsFixture, 'Введение');
+    assert.equal((await pageCounter(page)).current, 1, 'Книга после PDF не открылась с первой страницы.');
+    assert.equal(await page.locator('.book-content canvas').count(), 0, 'После замены PDF остались PDF-страницы в новом документе.');
     console.log(JSON.stringify({
       contentsReport,
       semanticsReport,
       longList: { leaves: longListReport.leaves, overflows: longListReport.overflows.length },
       largeDocument: { leaves: report.leaves, topics: report.topics.length, overflows: report.overflows.length, badSingleWordPages: report.badSingleWordPages, headingOnlyPages: report.headingOnlyPages },
-      mobile: { leaves: mobileReport.leaves, overflows: mobileReport.overflows.length, ...mobileGeometry }
+      mobile: { leaves: mobileReport.leaves, overflows: mobileReport.overflows.length, ...mobileGeometry },
+      pdf: { pages: pdfStart.total, testedPage: targetPdfPage, mobile: pdfMobile }
     }));
   } finally {
     await browser.close();

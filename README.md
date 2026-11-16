@@ -27,6 +27,8 @@
 
 ```powershell
 npm run check
+npm run test:formats
+npm run test:reader
 npm audit --omit=dev
 ```
 

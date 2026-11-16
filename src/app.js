@@ -22,6 +22,7 @@ let pages = [], toc = [], pageFlip = null, importing = false, sourceBlocks = [],
 let importNotices = [], resizeTimer = null;
 const renderedPdfPages = new Set();
 let sessionToken = null, currentImportId = null;
+let activePdf = null;
 
 void loadFormatSupport();
 
@@ -64,13 +65,13 @@ $('#openFile').onclick = chooseFile;
 $('#newFile').onclick = chooseFile;
 $('#prev').onclick = () => pageFlip?.flipPrev('bottom');
 $('#next').onclick = () => pageFlip?.flipNext('bottom');
-$('#tocToggle').onclick = () => { $('#tocPanel').hidden = !$('#tocPanel').hidden; };
-$('#closeToc').onclick = () => { $('#tocPanel').hidden = true; };
+$('#tocToggle').onclick = () => setTocPanelVisibility($('#tocPanel').hidden, { moveFocus: true });
+$('#closeToc').onclick = () => setTocPanelVisibility(false, { moveFocus: true });
 $('#tocSearch').oninput = filterToc;
 $('#goPage').onclick = goToPage;
 $('#pageJump').onkeydown = event => { if (event.key === 'Enter') goToPage(); };
 const narrowViewport = window.matchMedia('(max-width: 799px)');
-narrowViewport.addEventListener('change', event => { $('#tocPanel').hidden = event.matches; });
+narrowViewport.addEventListener('change', event => { setTocPanelVisibility(!event.matches); });
 $('#fileInput').onchange = event => {
   const [file] = event.target.files;
   event.target.value = '';
@@ -120,6 +121,34 @@ async function releaseImport(id) {
   }
 }
 
+async function disposePdf(pdf) {
+  try { await pdf?.destroy?.(); } catch (_) { /* A closed PDF worker needs no further action. */ }
+}
+
+function setTocPanelVisibility(open, { moveFocus = false } = {}) {
+  const panel = $('#tocPanel');
+  const toggle = $('#tocToggle');
+  panel.hidden = !open;
+  toggle.setAttribute('aria-expanded', String(open));
+  if (!moveFocus) return;
+  if (open) requestAnimationFrame(() => $('#tocSearch').focus());
+  else toggle.focus();
+}
+
+function applyPreparedBook(prepared) {
+  pages = prepared.pages;
+  toc = prepared.toc;
+  sourceBlocks = prepared.sourceBlocks;
+  documentLayout = prepared.documentLayout;
+  documentTocHints = prepared.documentTocHints;
+  importNotices = prepared.importNotices;
+  activePdf = prepared.pdf;
+}
+
+function captureBookState() {
+  return { pages, toc, sourceBlocks, documentLayout, documentTocHints, importNotices, pdf: activePdf };
+}
+
 async function importFile(selectedFile) {
   if (importing) return;
   const extension = `.${selectedFile.name.split('.').pop()?.toLowerCase() || ''}`;
@@ -131,6 +160,9 @@ async function importFile(selectedFile) {
   $('#loading').hidden = false;
   $('#openFile').disabled = true;
   $('#newFile').disabled = true;
+  const previousState = captureBookState();
+  let importedId = null;
+  let prepared = null;
   try {
     const format = formatByExtension.get(extension);
     if (format?.status === 'requires-word') {
@@ -145,19 +177,36 @@ async function importFile(selectedFile) {
     });
     const imported = await response.json();
     if (!response.ok) throw new Error(imported.error || 'Сервер не смог прочитать файл.');
+    importedId = imported.id;
     const loading = imported.extension === '.pdf' ? loadPdf(imported) : loadDocument(imported);
-    await Promise.race([loading, new Promise((_, reject) => setTimeout(() => reject(new Error('Превышено время ожидания. Попробуйте открыть другой файл.')), 90000))]);
+    const timeoutError = new Error('Превышено время ожидания. Попробуйте открыть другой файл.');
+    let timeoutId;
+    const timeout = new Promise((_, reject) => { timeoutId = setTimeout(() => reject(timeoutError), 90000); });
+    try {
+      prepared = await Promise.race([loading, timeout]);
+    } catch (error) {
+      if (error === timeoutError) void loading.then(lateBook => disposePdf(lateBook.pdf)).catch(() => {});
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    const previousPdf = previousState.pdf;
+    applyPreparedBook(prepared);
     $('#bookName').textContent = imported.name;
     $('#welcome').hidden = true;
     $('#reader').hidden = false;
-    $('#tocPanel').hidden = narrowViewport.matches;
+    setTocPanelVisibility(!narrowViewport.matches);
     renderToc();
     renderImportNotice();
     createBook();
     const previousImportId = currentImportId;
     currentImportId = imported.id;
     if (previousImportId && previousImportId !== currentImportId) void releaseImport(previousImportId);
+    if (previousPdf && previousPdf !== activePdf) void disposePdf(previousPdf);
   } catch (error) {
+    if (prepared?.pdf && prepared.pdf !== previousState.pdf) void disposePdf(prepared.pdf);
+    applyPreparedBook(previousState);
+    if (importedId) void releaseImport(importedId);
     alert(`Не удалось открыть файл. Проверьте формат документа.\n\n${error.message}`);
   } finally {
     importing = false;
@@ -170,21 +219,22 @@ async function importFile(selectedFile) {
 async function loadDocument(file) {
   const model = file.document;
   if (!model?.blocks?.length) throw new Error('Сервер не вернул модель документа. Попробуйте открыть файл ещё раз.');
-  importNotices = [...(file.notices || []), ...(model.notices || [])];
-  documentTocHints = model.tocHints || [];
+  const nextImportNotices = [...(file.notices || []), ...(model.notices || [])];
+  const nextTocHints = model.tocHints || [];
   const holder = document.createElement('div');
   model.blocks.forEach(block => {
     const template = document.createElement('template');
     template.innerHTML = sanitizeImportedHtml(block.html || '');
     holder.append(template.content);
   });
-  sourceBlocks = collectSourceBlocks(holder);
-  documentLayout = getPageLayout();
-  ({ pages, toc } = paginateDocument(sourceBlocks, documentLayout, documentTocHints));
-  if (pages.length > 1200) throw new Error('После разбиения получилось больше 1200 страниц. Разделите материал на части.');
-  if (!pages.length) pages = [{ type: 'html', html: '<h1>Документ</h1><p>В файле нет отображаемого текста.</p>' }];
-  toc = toc.filter(item => item.page < pages.length);
-  if (!toc.length) toc = [{ title: 'Начало документа', level: 1, page: 0 }];
+  const nextBlocks = collectSourceBlocks(holder);
+  const nextLayout = getPageLayout();
+  let { pages: nextPages, toc: nextToc } = paginateDocument(nextBlocks, nextLayout, nextTocHints);
+  if (nextPages.length > 1200) throw new Error('После разбиения получилось больше 1200 страниц. Разделите материал на части.');
+  if (!nextPages.length) nextPages = [{ type: 'html', html: '<h1>Документ</h1><p>В файле нет отображаемого текста.</p>' }];
+  nextToc = nextToc.filter(item => item.page < nextPages.length);
+  if (!nextToc.length) nextToc = [{ title: 'Начало документа', level: 1, page: 0 }];
+  return { pages: nextPages, toc: nextToc, sourceBlocks: nextBlocks, documentLayout: nextLayout, documentTocHints: nextTocHints, importNotices: nextImportNotices, pdf: null };
 }
 
 function sanitizeImportedHtml(html) {
@@ -520,30 +570,33 @@ function getTopic(node, hintsByTitle = new Map(), allowInferred = true) {
 }
 
 async function loadPdf(file) {
-  sourceBlocks = [];
-  documentLayout = null;
-  documentTocHints = [];
-  importNotices = [];
   const pdf = await pdfjsLib.getDocument({ url: file.pdfUrl, isEvalSupported: false, enableXfa: false }).promise;
-  if (pdf.numPages > 1200) throw new Error('PDF содержит больше 1200 страниц. Разделите материал на части.');
-  pages = Array.from({ length: pdf.numPages }, (_, index) => ({ type: 'pdf', pdf, pageNumber: index + 1 }));
-  toc = [];
-  const outline = await pdf.getOutline();
-  if (outline?.length) {
-    const flatten = async (items, level = 1) => {
-      for (const item of items) {
-        let page = 0;
-        try { const destination = typeof item.dest === 'string' ? await pdf.getDestination(item.dest) : item.dest; page = destination?.[0] ? await pdf.getPageIndex(destination[0]) : 0; } catch (_) { /* fallback */ }
-        toc.push({ title: item.title || 'Раздел', level, page });
-        if (item.items?.length) await flatten(item.items, level + 1);
-      }
-    };
-    await flatten(outline);
-  }
-  if (!toc.length) toc = await detectPdfToc(pdf);
-  if (!toc.length) {
-    toc = [{ title: 'Начало документа', level: 1, page: 0 }];
-    importNotices = ['В PDF нет встроенного оглавления. Для перехода используйте поле «Стр.» внизу книги.'];
+  try {
+    if (pdf.numPages > 1200) throw new Error('PDF содержит больше 1200 страниц. Разделите материал на части.');
+    const nextPages = Array.from({ length: pdf.numPages }, (_, index) => ({ type: 'pdf', pdf, pageNumber: index + 1 }));
+    const nextToc = [];
+    const outline = await pdf.getOutline();
+    if (outline?.length) {
+      const flatten = async (items, level = 1) => {
+        for (const item of items) {
+          let page = null;
+          try { const destination = typeof item.dest === 'string' ? await pdf.getDestination(item.dest) : item.dest; page = destination?.[0] ? await pdf.getPageIndex(destination[0]) : null; } catch (_) { /* Skip a broken bookmark instead of linking it to page one. */ }
+          if (Number.isInteger(page) && page >= 0 && page < pdf.numPages) nextToc.push({ title: item.title || 'Раздел', level, page });
+          if (item.items?.length) await flatten(item.items, level + 1);
+        }
+      };
+      await flatten(outline);
+    }
+    if (!nextToc.length) nextToc.push(...await detectPdfToc(pdf));
+    const nextImportNotices = [];
+    if (!nextToc.length) {
+      nextToc.push({ title: 'Начало документа', level: 1, page: 0 });
+      nextImportNotices.push('В PDF нет встроенного оглавления. Для перехода используйте поле «Стр.» внизу книги.');
+    }
+    return { pages: nextPages, toc: nextToc, sourceBlocks: [], documentLayout: getPageLayout(), documentTocHints: [], importNotices: nextImportNotices, pdf };
+  } catch (error) {
+    await disposePdf(pdf);
+    throw error;
   }
 }
 
@@ -587,7 +640,7 @@ function renderToc() {
   toc.forEach((item, index) => {
     const button = document.createElement('button');
     button.className = `toc-item l${Math.min(item.level, 6)}`; button.textContent = item.title; button.dataset.page = String(item.page + 1);
-    button.onclick = () => { pageFlip?.flip(item.page, 'top'); setActiveTopic(index); if (innerWidth < 800) $('#tocPanel').hidden = true; };
+    button.onclick = () => { pageFlip?.flip(item.page, 'top'); setActiveTopic(index); if (innerWidth < 800) setTocPanelVisibility(false, { moveFocus: true }); };
     nav.append(button);
   });
   setActiveTopic(-1);
@@ -614,9 +667,14 @@ function goToPage() {
   pageFlip.flip(page - 1, 'top');
 }
 
-function createBook() {
-  const currentPage = pageFlip?.getCurrentPageIndex?.() || 0;
-  const oldBook = $('#book'); const book = document.createElement('div'); book.id = 'book'; oldBook.replaceWith(book);
+function createBook({ preservePage = false } = {}) {
+  const currentPage = preservePage ? pageFlip?.getCurrentPageIndex?.() || 0 : 0;
+  const oldBook = $('#book'); const bookStage = oldBook.parentElement; const book = document.createElement('div'); book.id = 'book';
+  if (pageFlip) {
+    try { pageFlip.destroy(); } catch (error) { console.warn('Не удалось корректно закрыть предыдущую книгу:', error); }
+  }
+  if (oldBook.isConnected) oldBook.replaceWith(book);
+  else bookStage.append(book);
   pageFlip = null;
   const leaves = pages.map((data, index) => {
     const leaf = document.createElement('article'); leaf.className = 'book-page'; leaf.dataset.num = index + 1;
@@ -675,6 +733,10 @@ function updateReaderState(page) {
 }
 function setActiveTopic(index) { document.querySelectorAll('.toc-item').forEach((button, i) => button.classList.toggle('active', i === index)); }
 document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && !$('#tocPanel').hidden && innerWidth < 800) {
+    setTocPanelVisibility(false, { moveFocus: true });
+    return;
+  }
   if ($('#reader').hidden || !pageFlip || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '')) return;
   if (event.key === 'ArrowRight') { event.preventDefault(); pageFlip.flipNext('bottom'); }
   if (event.key === 'ArrowLeft') { event.preventDefault(); pageFlip.flipPrev('bottom'); }
@@ -682,16 +744,22 @@ document.addEventListener('keydown', event => {
 window.addEventListener('resize', () => {
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => {
-    if (importing || !sourceBlocks.length || $('#reader').hidden) return;
+    if (importing || (!sourceBlocks.length && !activePdf) || $('#reader').hidden) return;
     const nextLayout = getPageLayout();
     if (Math.abs(nextLayout.width - documentLayout.width) < 12 && Math.abs(nextLayout.height - documentLayout.height) < 12) return;
-    const oldPage = pageFlip?.getCurrentPageIndex?.() || 0;
     documentLayout = nextLayout;
-    ({ pages, toc } = paginateDocument(sourceBlocks, documentLayout, documentTocHints));
-    toc = toc.filter(item => item.page < pages.length);
-    if (!toc.length) toc = [{ title: 'Начало документа', level: 1, page: 0 }];
+    if (sourceBlocks.length) {
+      ({ pages, toc } = paginateDocument(sourceBlocks, documentLayout, documentTocHints));
+      toc = toc.filter(item => item.page < pages.length);
+      if (!toc.length) toc = [{ title: 'Начало документа', level: 1, page: 0 }];
+    }
     renderToc();
-    createBook();
-    if (oldPage && pageFlip) pageFlip.turnToPage(Math.min(oldPage, pages.length - 1));
+    createBook({ preservePage: true });
   }, 220);
+});
+
+window.addEventListener('pagehide', event => {
+  if (event.persisted) return;
+  void releaseImport(currentImportId);
+  void disposePdf(activePdf);
 });
