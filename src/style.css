@@ -238,6 +238,10 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
 .toc-item:hover { border-color: #d4e0d2; color: #1f4738; background: #eef4eb; }
 .toc-item.active { color: #173f31; background: #dcead9; font-weight: 800; }
 .toc-item.l2 { padding-left: 22px; font-size: 11px; }
+.toc-item.l3 { padding-left: 34px; font-size: 11px; }
+.toc-item.l4 { padding-left: 46px; font-size: 10px; }
+.toc-item.l5 { padding-left: 57px; font-size: 10px; }
+.toc-item.l6 { padding-left: 67px; font-size: 10px; }
 
 .reading-area {
   min-width: 0;
@@ -280,6 +284,9 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
 .book-page canvas { display: block; width: auto; max-width: 100%; height: auto; max-height: 100%; margin: 0 auto; object-fit: contain; }
 .book-page .fit-reduction { font-size: 10px !important; line-height: 1.28 !important; }
 .book-page .fit-reduction td, .book-page .fit-reduction th { padding: 2px; font-size: 9px; line-height: 1.15; }
+.book-page .force-fit { font-size: 8px !important; line-height: 1.08 !important; overflow-wrap: anywhere; }
+.book-page img.force-fit, .book-page .force-fit img { max-height: 88%; }
+.book-page table.force-fit td, .book-page table.force-fit th { padding: 1px; font-size: 8px; line-height: 1.05; }
 .pdf-wait { height: 100%; display: grid; place-content: center; color: #63786c; font-size: 13px; font-weight: 600; text-align: center; }
 .import-notice { position: absolute; top: 63px; left: 50%; z-index: 4; width: max-content; max-width: min(660px, 78vw); margin: 0; padding: 8px 12px; transform: translateX(-50%); border: 1px solid #ddc995; border-radius: 8px; color: #6c552d; background: #fff8e9ef; box-shadow: 0 4px 11px #5b483122; font-size: 11px; line-height: 1.35; text-align: center; }
 .controls { position: relative; z-index: 2; display: flex; align-items: center; justify-content: center; gap: 12px; margin: 17px 0 0; color: #506259; font-size: 11px; font-weight: 750; }

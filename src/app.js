@@ -18,7 +18,7 @@ const $ = selector => document.querySelector(selector);
 const cleanText = value => value.replace(/\s+/g, ' ').trim();
 let supportedExtensions = new Set(['.pdf', '.docx', '.docm', '.dotx', '.dotm', '.doc', '.dot', '.docb', '.odt', '.rtf', '.txt', '.md', '.html', '.htm', '.epub']);
 let formatByExtension = new Map(), serverCapabilities = null;
-let pages = [], toc = [], pageFlip = null, importing = false, sourceBlocks = [], documentLayout = null;
+let pages = [], toc = [], pageFlip = null, importing = false, sourceBlocks = [], documentLayout = null, documentTocHints = [];
 let importNotices = [], resizeTimer = null;
 const renderedPdfPages = new Set();
 let sessionToken = null, currentImportId = null;
@@ -69,6 +69,8 @@ $('#closeToc').onclick = () => { $('#tocPanel').hidden = true; };
 $('#tocSearch').oninput = filterToc;
 $('#goPage').onclick = goToPage;
 $('#pageJump').onkeydown = event => { if (event.key === 'Enter') goToPage(); };
+const narrowViewport = window.matchMedia('(max-width: 799px)');
+narrowViewport.addEventListener('change', event => { $('#tocPanel').hidden = event.matches; });
 $('#fileInput').onchange = event => {
   const [file] = event.target.files;
   event.target.value = '';
@@ -148,6 +150,7 @@ async function importFile(selectedFile) {
     $('#bookName').textContent = imported.name;
     $('#welcome').hidden = true;
     $('#reader').hidden = false;
+    $('#tocPanel').hidden = narrowViewport.matches;
     renderToc();
     renderImportNotice();
     createBook();
@@ -168,6 +171,7 @@ async function loadDocument(file) {
   const model = file.document;
   if (!model?.blocks?.length) throw new Error('Сервер не вернул модель документа. Попробуйте открыть файл ещё раз.');
   importNotices = [...(file.notices || []), ...(model.notices || [])];
+  documentTocHints = model.tocHints || [];
   const holder = document.createElement('div');
   model.blocks.forEach(block => {
     const template = document.createElement('template');
@@ -176,7 +180,7 @@ async function loadDocument(file) {
   });
   sourceBlocks = collectSourceBlocks(holder);
   documentLayout = getPageLayout();
-  ({ pages, toc } = paginateDocument(sourceBlocks, documentLayout));
+  ({ pages, toc } = paginateDocument(sourceBlocks, documentLayout, documentTocHints));
   if (pages.length > 1200) throw new Error('После разбиения получилось больше 1200 страниц. Разделите материал на части.');
   if (!pages.length) pages = [{ type: 'html', html: '<h1>Документ</h1><p>В файле нет отображаемого текста.</p>' }];
   toc = toc.filter(item => item.page < pages.length);
@@ -224,60 +228,101 @@ function normalizeSourceNode(node) {
 
 function expandBlock(block) {
   block.querySelectorAll('img').forEach(image => image.removeAttribute('style'));
-  if (block.tagName === 'TABLE') return splitTable(block);
+  if (block.tagName === 'TABLE' || block.tagName === 'UL' || block.tagName === 'OL') return [block];
   const text = cleanText(block.textContent || '');
   if (!['P', 'LI'].includes(block.tagName) || block.querySelector('img,table') || text.length < 720) return [block];
   return splitTextBlock(block, 420);
 }
 
 function splitTextBlock(block, limit = 420) {
-  const text = cleanText(block.textContent || '');
-  if (!text) return [block];
-  const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text];
-  const chunks = [];
-  let current = '';
-  for (const sentence of sentences) {
-    const words = sentence.trim().split(/\s+/);
-    for (const word of words) {
-      const next = current ? `${current} ${word}` : word;
-      if (next.length > limit && current) { chunks.push(current); current = word; } else current = next;
-    }
-  }
-  if (current) chunks.push(current);
-  return chunks.map((chunk, index) => {
-    const part = block.cloneNode(false);
-    part.textContent = chunk;
-    if (index > 0) part.classList.add('continued-paragraph');
-    return part;
+  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+  const textNodes = [];
+  while (walker.nextNode()) if (walker.currentNode.nodeValue.trim()) textNodes.push(walker.currentNode);
+  if (!textNodes.length) return [block];
+  const parts = [];
+  let part, length;
+  const startPart = () => {
+    part = block.cloneNode(false);
+    if (parts.length) part.classList.add('continued-paragraph');
+    length = 0;
+    parts.push(part);
+  };
+  const appendToken = (textNode, token) => {
+    const ancestors = [];
+    for (let parent = textNode.parentElement; parent && parent !== block; parent = parent.parentElement) ancestors.unshift(parent);
+    let target = part;
+    ancestors.forEach(original => {
+      const copy = original.cloneNode(false);
+      target.append(copy);
+      target = copy;
+    });
+    target.append(document.createTextNode(token));
+  };
+  startPart();
+  textNodes.forEach(textNode => {
+    textNode.nodeValue.split(/(\s+)/).filter(Boolean).forEach(token => {
+      const maxTokenPart = Math.max(24, Math.floor(limit * 0.75));
+      const tokenParts = /\S/.test(token) && token.length > maxTokenPart
+        ? token.match(new RegExp(`.{1,${maxTokenPart}}`, 'g')) || [token]
+        : [token];
+      tokenParts.forEach(partText => {
+        const isWord = /\S/.test(partText);
+        if (isWord && length + partText.length > limit && length > limit * 0.45) startPart();
+        appendToken(textNode, partText);
+        length += partText.length;
+      });
+    });
   });
+  if (parts.length > 1 && cleanText(parts.at(-1).textContent).length < 48) {
+    const last = parts.pop();
+    parts.at(-1).append(...last.childNodes);
+  }
+  return parts;
 }
 
 function splitTable(table, rowsPerPart = 6) {
   const rows = [...table.rows];
-  if (rows.length <= rowsPerPart + 1) return [table];
-  const header = rows[0];
+  const headerRows = table.tHead ? [...table.tHead.rows] : (rows[0]?.cells.length && [...rows[0].cells].every(cell => cell.tagName === 'TH') ? [rows[0]] : []);
+  const bodyRows = rows.filter(row => !headerRows.includes(row));
+  if (bodyRows.length <= rowsPerPart) return [table];
   const tables = [];
-  for (let start = 1; start < rows.length; start += rowsPerPart) {
+  for (let start = 0; start < bodyRows.length; start += rowsPerPart) {
     const copy = table.cloneNode(false);
+    if (headerRows.length) {
+      const head = document.createElement('thead');
+      headerRows.forEach(row => head.append(row.cloneNode(true)));
+      copy.append(head);
+    }
     const body = document.createElement('tbody');
-    body.append(header.cloneNode(true));
-    rows.slice(start, start + rowsPerPart).forEach(row => body.append(row.cloneNode(true)));
+    bodyRows.slice(start, start + rowsPerPart).forEach(row => body.append(row.cloneNode(true)));
     copy.append(body);
     tables.push(copy);
   }
   return tables;
 }
 
-function splitList(list) {
-  const chunks = [];
-  [...list.children].filter(item => item.tagName === 'LI').forEach(item => {
-    splitTextBlock(item, 360).forEach(part => {
-      const copy = list.cloneNode(false);
-      copy.append(part);
-      chunks.push(copy);
-    });
+function splitList(list, itemsPerPart = 6, itemTextLimit = 420) {
+  const items = [...list.children].filter(item => item.tagName === 'LI');
+  const itemParts = items.flatMap((item, itemIndex) => {
+    const fragments = cleanText(item.textContent).length > itemTextLimit
+      ? splitTextBlock(item, itemTextLimit)
+      : [item.cloneNode(true)];
+    return fragments.map((fragment, fragmentIndex) => ({ fragment, itemIndex, continuation: fragmentIndex > 0 }));
   });
-  return chunks.length ? chunks : [list];
+  if (itemParts.length <= itemsPerPart && itemParts.length === items.length) return [list];
+  const chunks = [];
+  const initialStart = Number(list.getAttribute('start')) || 1;
+  for (let start = 0; start < itemParts.length; start += itemsPerPart) {
+    const copy = list.cloneNode(false);
+    const chunk = itemParts.slice(start, start + itemsPerPart);
+    if (copy.tagName === 'OL') copy.setAttribute('start', String(initialStart + chunk[0].itemIndex));
+    chunk.forEach(({ fragment, itemIndex, continuation }) => {
+      if (copy.tagName === 'OL' && continuation) fragment.setAttribute('value', String(initialStart + itemIndex));
+      copy.append(fragment);
+    });
+    chunks.push(copy);
+  }
+  return chunks;
 }
 
 function getPageLayout() {
@@ -293,7 +338,15 @@ function getPageLayout() {
   };
 }
 
-function paginateDocument(blocks, layout) {
+function isHeadingNode(node) {
+  return /^H[1-6]$/.test(node?.tagName || '');
+}
+
+function hasBodyContent(nodes) {
+  return nodes.some(node => !isHeadingNode(node) && (cleanText(node.textContent || '') || node.querySelector?.('img,table')));
+}
+
+function paginateDocument(blocks, layout, tocHints = []) {
   const probe = document.createElement('article');
   probe.className = 'book-page pagination-probe';
   probe.style.width = `${layout.width}px`;
@@ -305,9 +358,9 @@ function paginateDocument(blocks, layout) {
 
   const result = [];
   const topics = [];
-  const documentHasContents = blocks.some(block => /^(мазмұны|содержание|оглавление|contents?)$/i.test(cleanText(block.textContent)));
-  let hasContents = false;
-  let bodyStarted = !documentHasContents;
+  const contentsIndex = blocks.findIndex(block => isContentsHeading(cleanText(block.textContent)));
+  const bodyStartIndex = contentsIndex < 0 ? 0 : findBodyStartIndex(blocks, contentsIndex);
+  const hintsByTitle = new Map(tocHints.map(hint => [cleanText(hint.title), hint]));
   let current = [];
   const flush = () => {
     if (!current.length) return;
@@ -318,18 +371,24 @@ function paginateDocument(blocks, layout) {
   const fits = () => content.scrollHeight <= content.clientHeight + 1;
 
   const queue = [];
-  for (const source of blocks) {
-    const text = cleanText(source.textContent);
-    if (/^(мазмұны|содержание|оглавление|contents?)$/i.test(text)) hasContents = true;
-    const candidate = getTopic(source);
-    if (hasContents && candidate && isBodyStart(text, candidate)) bodyStarted = true;
-    queue.push({ node: source, topic: bodyStarted ? candidate : null });
-  }
+  blocks.forEach((source, index) => {
+    const candidate = index >= bodyStartIndex ? getTopic(source, hintsByTitle, contentsIndex < 0 || index >= bodyStartIndex) : null;
+    queue.push({ node: source, topic: candidate });
+  });
 
   while (queue.length) {
     const entry = queue.shift();
-    if (entry.topic && current.length) flush();
-    const node = entry.node.cloneNode(true);
+    // A chapter heading must stay with the following subheading or text. Without this
+    // guard a new topic after a chapter may leave a nearly empty page containing only
+    // "4-ТАРАУ" or another heading.
+    if (entry.topic && current.length && hasBodyContent(current) && content.scrollHeight > content.clientHeight * 0.62) flush();
+    let node = entry.node.cloneNode(true);
+    if (entry.topic && !isHeadingNode(node)) {
+      const heading = document.createElement(`h${Math.min(Math.max(entry.topic.level || 1, 1), 6)}`);
+      heading.className = 'inferred-heading';
+      heading.innerHTML = node.innerHTML;
+      node = heading;
+    }
     content.append(node);
     if (!fits() && current.length) {
       content.removeChild(node);
@@ -346,6 +405,33 @@ function paginateDocument(blocks, layout) {
       }
       node.classList.add('fit-reduction');
       content.append(node);
+      if (!fits()) {
+        content.removeChild(node);
+        const emergencyFragments = splitOversizedBlock(entry.node, true);
+        if (emergencyFragments.length > 1) {
+          queue.unshift(...emergencyFragments.map((fragment, index) => ({ node: fragment, topic: index === 0 ? entry.topic : null })));
+          continue;
+        }
+        node.classList.add('force-fit');
+        content.append(node);
+        if (!fits()) {
+          content.removeChild(node);
+          const plainText = cleanText(entry.node.textContent || '');
+          if (plainText) {
+            const fallback = document.createElement('p');
+            fallback.textContent = plainText;
+            const textFragments = splitTextBlock(fallback, 120);
+            if (textFragments.length > 1) {
+              queue.unshift(...textFragments.map((fragment, index) => ({ node: fragment, topic: index === 0 ? entry.topic : null })));
+              continue;
+            }
+          }
+          const notice = document.createElement('p');
+          notice.className = 'unrenderable-block';
+          notice.textContent = 'Этот фрагмент слишком велик для страницы и не может быть показан без обрезания. Разделите исходный документ на части.';
+          content.append(notice);
+        }
+      }
     }
     if (entry.topic) topics.push({ ...entry.topic, page: result.length });
     current.push(node);
@@ -355,10 +441,10 @@ function paginateDocument(blocks, layout) {
   return { pages: result, toc: topics };
 }
 
-function splitOversizedBlock(block) {
+function splitOversizedBlock(block, emergency = false) {
   const tag = block.tagName?.toUpperCase();
   if (['P', 'LI', 'H1', 'H2', 'H3', 'H4'].includes(tag)) return splitTextBlock(block, 220);
-  if (tag === 'UL' || tag === 'OL') return splitList(block);
+  if (tag === 'UL' || tag === 'OL') return splitList(block, 1, emergency ? 120 : 220);
   if (tag === 'TABLE') {
     if (block.rows.length > 2) return splitTable(block, 1);
     return tableRowAsParagraphs(block);
@@ -373,9 +459,10 @@ function splitOversizedBlock(block) {
 }
 
 function tableRowAsParagraphs(table) {
-  const headers = [...(table.rows[0]?.cells || [])].map(cell => cleanText(cell.textContent));
+  const headerRow = table.tHead?.rows[0] || ([...(table.rows[0]?.cells || [])].every(cell => cell.tagName === 'TH') ? table.rows[0] : null);
+  const headers = [...(headerRow?.cells || [])].map(cell => cleanText(cell.textContent));
   const output = [];
-  [...table.rows].slice(1).forEach(row => [...row.cells].forEach((cell, index) => {
+  [...table.rows].filter(row => row !== headerRow).forEach(row => [...row.cells].forEach((cell, index) => {
     const paragraph = document.createElement('p');
     const label = headers[index] ? `${headers[index]}: ` : '';
     paragraph.textContent = `${label}${cleanText(cell.textContent)}`;
@@ -384,17 +471,39 @@ function tableRowAsParagraphs(table) {
   return output.length ? output : [table];
 }
 
-function isBodyStart(text, topic) {
-  return /^(кіріспе|введение|introduction)$/i.test(text)
-    || /^\d+\s*[-–]?\s*(тарау|глава|бөлім|chapter)\b/i.test(text)
-    || topic.level > 1;
+function isContentsHeading(text) {
+  return /^(мазмұны|содержание|оглавление|contents?)$/i.test(text);
 }
 
-function getTopic(node) {
+function findBodyStartIndex(blocks, contentsIndex) {
+  for (let index = contentsIndex + 1; index < blocks.length; index++) {
+    const node = blocks[index];
+    const text = cleanText(node.textContent);
+    const tag = node.tagName?.toLowerCase();
+    // Word contents are often styled as H2/H3. After a contents page, only a true document
+    // start (introduction, chapter, or the next H1) may establish the start of navigation.
+    if (tag === 'h1' || /^(кіріспе|введение|introduction)$/i.test(text) || /^\d+\s*[-–]?\s*(тарау|глава|бөлім|chapter)\b/i.test(text)) return index;
+  }
+  return Number.POSITIVE_INFINITY;
+}
+
+function isBibliographicCitation(text) {
+  // Do not use \b around Cyrillic words: JavaScript defines it only for ASCII \w.
+  const hasSourceMarker = /(?:конспект(?:\s+лекций)?|университет(?:і)?|издательств\w*|isbn|reference\s+book)/i.test(text);
+  const hasPublicationDetail = /(?:19|20)\d{2}\s*(?:г\.?|год(?:а)?)?/i.test(text) || /(?:тула|алматы|москва|астана)/i.test(text);
+  return hasSourceMarker && hasPublicationDetail;
+}
+
+function getTopic(node, hintsByTitle = new Map(), allowInferred = true) {
   const text = cleanText(node.textContent);
-  if (!text || /^((содержание)|(оглавление)|(contents?))$/i.test(text)) return null;
+  if (!text || isContentsHeading(text)) return null;
+  if (isBibliographicCitation(text)) return null;
   const tag = node.tagName.toLowerCase();
   if (/^h[1-4]$/.test(tag)) return { title: text, level: Number(tag[1]) };
+  if (/^h[5-6]$/.test(tag)) return { title: text, level: Number(tag[1]) };
+  const hinted = hintsByTitle.get(text);
+  if (hinted) return { title: text, level: hinted.level || 1 };
+  if (!allowInferred) return null;
   const boldText = [...node.querySelectorAll('strong,b')].map(item => cleanText(item.textContent)).join('');
   const mostlyBold = node.tagName === 'P' && boldText.length >= text.replace(/\s/g, '').length * 0.88;
   const numbered = /^(\d+)\s*\.\s*(\d+)(?:\s*\.\s*(\d+))?\.?\s+/.exec(text);
@@ -413,6 +522,7 @@ function getTopic(node) {
 async function loadPdf(file) {
   sourceBlocks = [];
   documentLayout = null;
+  documentTocHints = [];
   importNotices = [];
   const pdf = await pdfjsLib.getDocument({ url: file.pdfUrl, isEvalSupported: false, enableXfa: false }).promise;
   if (pdf.numPages > 1200) throw new Error('PDF содержит больше 1200 страниц. Разделите материал на части.');
@@ -439,7 +549,10 @@ async function loadPdf(file) {
 
 async function detectPdfToc(pdf) {
   const topics = [];
-  for (let pageNumber = 1; pageNumber <= Math.min(pdf.numPages, 12); pageNumber++) {
+  let pageLabels = null;
+  try { pageLabels = await pdf.getPageLabels?.(); } catch (_) { /* PDF may not define labels */ }
+  if (!pageLabels?.length) return topics;
+  for (let pageNumber = 1; pageNumber <= Math.min(pdf.numPages, 40); pageNumber++) {
     const pdfPage = await pdf.getPage(pageNumber);
     const textContent = await pdfPage.getTextContent();
     const lines = pdfTextLines(textContent.items);
@@ -449,7 +562,8 @@ async function detectPdfToc(pdf) {
       const match = /^(.*?)\s*(?:[.·•…\s]{3,})\s*(\d{1,4})\s*$/.exec(cleanText(line));
       if (!match) continue;
       const title = cleanText(match[1].replace(/[.·•…\s]+$/g, ''));
-      const target = Number(match[2]) - 1;
+      const printedNumber = Number(match[2]);
+      const target = pageLabels.findIndex(label => cleanText(label) === String(printedNumber));
       if (title.length < 4 || target < 0 || target >= pdf.numPages) continue;
       topics.push({ title, level: 1, page: target });
     }
@@ -472,7 +586,7 @@ function renderToc() {
   const nav = $('#toc'); nav.innerHTML = '';
   toc.forEach((item, index) => {
     const button = document.createElement('button');
-    button.className = `toc-item l${Math.min(item.level, 2)}`; button.textContent = item.title;
+    button.className = `toc-item l${Math.min(item.level, 6)}`; button.textContent = item.title; button.dataset.page = String(item.page + 1);
     button.onclick = () => { pageFlip?.flip(item.page, 'top'); setActiveTopic(index); if (innerWidth < 800) $('#tocPanel').hidden = true; };
     nav.append(button);
   });
@@ -512,7 +626,7 @@ function createBook() {
   leaves.forEach(leaf => book.append(leaf));
   const layout = documentLayout || getPageLayout();
   pageFlip = new PageFlip(book, {
-    width: layout.width, height: layout.height, size: 'stretch', minWidth: 280, maxWidth: 600, minHeight: 410, maxHeight: 720,
+    width: layout.width, height: layout.height, size: 'fixed', minWidth: 280, maxWidth: 600, minHeight: 410, maxHeight: 720,
     drawShadow: true, maxShadowOpacity: 0.55, flippingTime: 780, usePortrait: true, showCover: false,
     mobileScrollSupport: true, swipeDistance: 25, startZIndex: 5, disableFlipByClick: false
   });
@@ -573,7 +687,7 @@ window.addEventListener('resize', () => {
     if (Math.abs(nextLayout.width - documentLayout.width) < 12 && Math.abs(nextLayout.height - documentLayout.height) < 12) return;
     const oldPage = pageFlip?.getCurrentPageIndex?.() || 0;
     documentLayout = nextLayout;
-    ({ pages, toc } = paginateDocument(sourceBlocks, documentLayout));
+    ({ pages, toc } = paginateDocument(sourceBlocks, documentLayout, documentTocHints));
     toc = toc.filter(item => item.page < pages.length);
     if (!toc.length) toc = [{ title: 'Начало документа', level: 1, page: 0 }];
     renderToc();
