@@ -6,7 +6,11 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { chromium } = require('playwright-core');
 
-const bravePath = 'C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe';
+const browserPath = process.env.TEXTBOOK_BROWSER_PATH || [
+  'C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe',
+  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+].find(candidate => fs.existsSync(candidate));
 const sourceFile = path.join(process.cwd(), 'Тест', 'Казакша электр аппараттары КІТАП 27.10.docx');
 const pdfFile = path.join(process.cwd(), 'Тест', 'УМКД Android -де мобильді қосымшаларды әзірлеу 03.09.2026.pdf');
 const contentsFixture = path.join(process.cwd(), 'fixtures', 'pagination-contents.html');
@@ -109,12 +113,12 @@ async function assertTocNavigation(page, indexes) {
 }
 
 async function main() {
-  if (!fs.existsSync(bravePath)) throw new Error('Brave не найден: browser-тест нельзя запустить.');
+  if (!browserPath || !fs.existsSync(browserPath)) throw new Error('Не найден Chromium-браузер. Укажите TEXTBOOK_BROWSER_PATH или установите Edge, Chrome либо Brave.');
   for (const file of [sourceFile, pdfFile, contentsFixture, semanticsFixture]) {
     if (!fs.existsSync(file)) throw new Error(`Нет файла для browser-теста: ${file}`);
   }
   const server = await startServer();
-  const browser = await chromium.launch({ executablePath: bravePath, headless: true, args: ['--disable-gpu'] });
+  const browser = await chromium.launch({ executablePath: browserPath, headless: true, args: ['--disable-gpu'] });
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 980 } });
     page.setDefaultTimeout(120_000);
