@@ -173,8 +173,8 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
 }
 .upload-card.is-drop-target { outline: 3px solid #f1cd76; outline-offset: 5px; transform: translateY(-2px); }
 .book-preview {
-  width: 124px;
-  height: 85px;
+  width: 154px;
+  height: 105px;
   margin-bottom: 26px;
   padding: 17px 14px;
   position: relative;
@@ -263,10 +263,10 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
 #book { display: block; filter: drop-shadow(0 20px 20px #543f2e4d); }
 .stf__parent { margin: auto; }
 .stf__item { box-shadow: inset 0 0 0 1px #d7ccbd; }
-.book-page { width: 100%; height: 100%; padding: 42px 46px 61px; position: relative; overflow: hidden; color: #303b33; background: linear-gradient(90deg, #f0e9dd 0%, #fffdf7 10%, #fffdf7 89%, #eee5d8 100%); }
+.book-page { width: 100%; height: 100%; padding: 38px 44px 82px; position: relative; overflow: hidden; color: #303b33; background: linear-gradient(90deg, #f0e9dd 0%, #fffdf7 10%, #fffdf7 89%, #eee5d8 100%); }
 .book-page::before { content: ''; position: absolute; z-index: 0; top: 0; bottom: 0; left: 0; width: 11px; background: linear-gradient(90deg, #c9baa2aa, #fbf8f077); }
 .book-content { position: relative; z-index: 1; height: 100%; overflow: hidden; }
-.page-number { position: absolute; z-index: 2; right: 0; bottom: 19px; left: 0; color: #87968b; font-size: 10px; font-weight: 700; letter-spacing: .4px; line-height: 12px; text-align: center; pointer-events: none; }
+.page-number { position: absolute; z-index: 2; right: 0; bottom: 27px; left: 0; color: #87968b; font-size: 10px; font-weight: 700; letter-spacing: .4px; line-height: 12px; text-align: center; pointer-events: none; }
 .book-page h1, .book-page h2, .book-page h3, .book-page h4 { color: #244d40; font-family: var(--serif); }
 .book-page h1 { margin: 0 0 17px; font-size: 29px; line-height: 1.16; letter-spacing: -.5px; }
 .book-page h2 { margin: 0 0 14px; font-size: 22px; line-height: 1.22; }
@@ -282,6 +282,11 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
 .book-page th, .book-page td { padding: 4px; overflow-wrap: anywhere; border: 1px solid #d9d0c2; vertical-align: top; }
 .book-page th { background: #eef1e8; color: #2d5142; }
 .book-page canvas { display: block; width: auto; max-width: 100%; height: auto; max-height: 100%; margin: 0 auto; object-fit: contain; }
+.pdf-page { padding: 0; background: #f8f2e6; }
+.pdf-page::before { display: none; }
+.pdf-page .book-content { display: grid; place-items: center; background: #f8f2e6; }
+.pdf-page canvas { width: 100%; height: 100%; max-width: 100%; max-height: 100%; margin: 0; object-fit: contain; mix-blend-mode: multiply; }
+.pdf-page .page-number { display: none; }
 .book-page .fit-reduction { font-size: 10px !important; line-height: 1.28 !important; }
 .book-page .fit-reduction td, .book-page .fit-reduction th { padding: 2px; font-size: 9px; line-height: 1.15; }
 .book-page .force-fit { font-size: 8px !important; line-height: 1.08 !important; overflow-wrap: anywhere; }
@@ -330,7 +335,8 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
   #tocPanel { position: absolute; z-index: 8; width: min(86vw, 320px); height: 100%; box-shadow: 8px 0 22px #362a2140; }
   .toc-toggle { top: 13px; left: 13px; }
   .import-notice { top: 55px; max-width: 88vw; }
-  .book-page { padding: 36px 30px 59px; }
+  .book-page { padding: 32px 28px 78px; }
+  .pdf-page { padding: 0; }
   .book-page h1 { font-size: 26px; }
   .book-page h2 { font-size: 20px; }
   .book-page p, .book-page li { font-size: 12.5px; line-height: 1.58; }
@@ -341,4 +347,5 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
   .outline-btn { max-width: 118px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .feature-list span { padding: 7px 9px; }
   .book-page { padding-right: 24px; padding-left: 24px; }
+  .pdf-page { padding: 0; }
 }

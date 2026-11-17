@@ -145,6 +145,17 @@ function applyPreparedBook(prepared) {
   activePdf = prepared.pdf;
 }
 
+function hydratePdfToc(prepared) {
+  if (!prepared.tocPromise) return;
+  void prepared.tocPromise.then(discoveredToc => {
+    if (activePdf !== prepared.pdf || !discoveredToc?.length) return;
+    toc = discoveredToc;
+    renderToc();
+  }).catch(() => {
+    // The initial "Начало документа" item remains usable if a long PDF is closed before scanning finishes.
+  });
+}
+
 function captureBookState() {
   return { pages, toc, sourceBlocks, documentLayout, documentTocHints, importNotices, pdf: activePdf };
 }
@@ -178,10 +189,11 @@ async function importFile(selectedFile) {
     const imported = await response.json();
     if (!response.ok) throw new Error(imported.error || 'Сервер не смог прочитать файл.');
     importedId = imported.id;
-    const loading = imported.extension === '.pdf' ? loadPdf(imported) : loadDocument(imported);
+    const loading = imported.pdfUrl ? loadPdf(imported) : loadDocument(imported);
+    const timeoutMs = imported.renderMode === 'original-layout' ? 180000 : 90000;
     const timeoutError = new Error('Превышено время ожидания. Попробуйте открыть другой файл.');
     let timeoutId;
-    const timeout = new Promise((_, reject) => { timeoutId = setTimeout(() => reject(timeoutError), 90000); });
+    const timeout = new Promise((_, reject) => { timeoutId = setTimeout(() => reject(timeoutError), timeoutMs); });
     try {
       prepared = await Promise.race([loading, timeout]);
     } catch (error) {
@@ -199,6 +211,7 @@ async function importFile(selectedFile) {
     renderToc();
     renderImportNotice();
     createBook();
+    hydratePdfToc(prepared);
     const previousImportId = currentImportId;
     currentImportId = imported.id;
     if (previousImportId && previousImportId !== currentImportId) void releaseImport(previousImportId);
@@ -381,10 +394,18 @@ function getPageLayout() {
     ? readerWidth
     : Math.max(360, window.innerWidth - (window.innerWidth > 760 ? 300 : 0));
   const narrow = availableWidth <= 760;
-  const totalWidth = Math.min(availableWidth * (narrow ? 0.92 : 0.94), narrow ? 620 : 1120);
+  const availableHeight = Math.max(500, window.innerHeight - 74);
+  // Leave room for the controls, but make the desktop spread use the screen rather than
+  // looking like a small card in the middle of the reader.
+  const maxPageHeight = Math.min(760, Math.floor(availableHeight * (narrow ? 0.70 : 0.85)));
+  const totalWidth = Math.min(availableWidth * (narrow ? 0.92 : 0.90), narrow ? 620 : 1160);
+  const idealWidth = Math.floor(maxPageHeight / Math.SQRT2);
+  const maxPageWidth = Math.floor(totalWidth / (narrow ? 1 : 2));
+  const width = Math.max(280, Math.min(520, idealWidth, maxPageWidth));
   return {
-    width: Math.max(280, Math.min(600, Math.floor(narrow ? totalWidth : totalWidth / 2))),
-    height: Math.max(410, Math.min(Math.floor((window.innerHeight - 74) * (narrow ? 0.70 : 0.75)), 720))
+    width,
+    height: Math.max(410, Math.min(maxPageHeight, Math.floor(width * Math.SQRT2))),
+    portrait: narrow
   };
 }
 
@@ -588,16 +609,40 @@ async function loadPdf(file) {
       await flatten(outline);
     }
     if (!nextToc.length) nextToc.push(...await detectPdfToc(pdf));
+    const tocPromise = !nextToc.length && file.renderMode === 'original-layout'
+      ? detectPdfTocFromHints(pdf, file.document?.tocHints || [])
+      : null;
     const nextImportNotices = [];
     if (!nextToc.length) {
       nextToc.push({ title: 'Начало документа', level: 1, page: 0 });
       nextImportNotices.push('В PDF нет встроенного оглавления. Для перехода используйте поле «Стр.» внизу книги.');
     }
-    return { pages: nextPages, toc: nextToc, sourceBlocks: [], documentLayout: getPageLayout(), documentTocHints: [], importNotices: nextImportNotices, pdf };
+    return { pages: nextPages, toc: nextToc, sourceBlocks: [], documentLayout: getPageLayout(), documentTocHints: [], importNotices: nextImportNotices, pdf, tocPromise };
   } catch (error) {
     await disposePdf(pdf);
     throw error;
   }
+}
+
+async function detectPdfTocFromHints(pdf, hints) {
+  const remaining = [...new Map(hints
+    .map(hint => ({ title: cleanText(hint.title || ''), level: hint.level || 1 }))
+    .filter(hint => hint.title.length >= 4 && !isContentsHeading(hint.title))
+    .map(hint => [hint.title.toLocaleLowerCase(), hint])).values()];
+  if (!remaining.length) return [];
+  const topics = [];
+  for (let pageNumber = 1; pageNumber <= Math.min(pdf.numPages, 600) && remaining.length; pageNumber++) {
+    const textContent = await pdf.getPage(pageNumber).then(page => page.getTextContent());
+    const pageText = cleanText(textContent.items.map(item => item.str).join(' ')).toLocaleLowerCase();
+    for (let index = remaining.length - 1; index >= 0; index--) {
+      const hint = remaining[index];
+      if (pageText.includes(hint.title.toLocaleLowerCase())) {
+        topics.push({ ...hint, page: pageNumber - 1 });
+        remaining.splice(index, 1);
+      }
+    }
+  }
+  return topics.sort((a, b) => a.page - b.page || a.level - b.level);
 }
 
 async function detectPdfToc(pdf) {
@@ -677,15 +722,15 @@ function createBook({ preservePage = false } = {}) {
   else bookStage.append(book);
   pageFlip = null;
   const leaves = pages.map((data, index) => {
-    const leaf = document.createElement('article'); leaf.className = 'book-page'; leaf.dataset.num = index + 1;
+    const leaf = document.createElement('article'); leaf.className = `book-page${data.type === 'pdf' ? ' pdf-page' : ''}`; leaf.dataset.num = index + 1;
     leaf.innerHTML = data.type === 'html' ? `<div class="book-content">${data.html}</div><span class="page-number" aria-hidden="true">${index + 1}</span>` : `<div class="book-content"><div class="pdf-wait">Подготавливаем страницу…</div></div><span class="page-number" aria-hidden="true">${index + 1}</span>`;
     return leaf;
   });
   leaves.forEach(leaf => book.append(leaf));
   const layout = documentLayout || getPageLayout();
   pageFlip = new PageFlip(book, {
-    width: layout.width, height: layout.height, size: 'fixed', minWidth: 280, maxWidth: 600, minHeight: 410, maxHeight: 720,
-    drawShadow: true, maxShadowOpacity: 0.55, flippingTime: 780, usePortrait: true, showCover: false,
+    width: layout.width, height: layout.height, size: 'fixed', minWidth: 280, maxWidth: 600, minHeight: 410, maxHeight: 760,
+    drawShadow: true, maxShadowOpacity: 0.55, flippingTime: 780, usePortrait: layout.portrait, showCover: false,
     mobileScrollSupport: true, swipeDistance: 25, startZIndex: 5, disableFlipByClick: false
   });
   pageFlip.loadFromHTML(leaves);
@@ -708,7 +753,7 @@ function ensurePdfPagesAround(pageIndex, leaves) {
 
 async function renderPdfPage(data, leaf) {
   try {
-    const pdfPage = await data.pdf.getPage(data.pageNumber); const viewport = pdfPage.getViewport({ scale: 1.65 });
+    const pdfPage = await data.pdf.getPage(data.pageNumber); const viewport = pdfPage.getViewport({ scale: Math.min(2.25, Math.max(1.75, window.devicePixelRatio * 1.25)) });
     const canvas = document.createElement('canvas'); canvas.width = viewport.width; canvas.height = viewport.height;
     const content = leaf.querySelector('.book-content');
     content.replaceChildren(canvas);
@@ -726,10 +771,13 @@ async function renderPdfPage(data, leaf) {
 
 function updateReaderState(page) {
   const current = Number(page) || 0, count = pages.length;
-  $('#pageCounter').textContent = `${Math.min(current + 1, count)} / ${count}`;
+  const portrait = documentLayout?.portrait ?? getPageLayout().portrait;
+  const firstVisible = Math.min(current + 1, count);
+  const lastVisible = portrait ? firstVisible : Math.min(current + 2, count);
+  $('#pageCounter').textContent = `${portrait || firstVisible === lastVisible ? firstVisible : `${firstVisible}–${lastVisible}`} / ${count}`;
   $('#pageJump').max = String(count); $('#pageJump').value = String(Math.min(current + 1, count));
   $('#prev').disabled = current <= 0; $('#next').disabled = current >= count - 1;
-  let topicIndex = -1; toc.forEach((topic, index) => { if (topic.page <= current) topicIndex = index; }); setActiveTopic(topicIndex);
+  let topicIndex = -1; toc.forEach((topic, index) => { if (topic.page <= lastVisible - 1) topicIndex = index; }); setActiveTopic(topicIndex);
 }
 function setActiveTopic(index) { document.querySelectorAll('.toc-item').forEach((button, i) => button.classList.toggle('active', i === index)); }
 document.addEventListener('keydown', event => {

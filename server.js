@@ -29,6 +29,7 @@ const MAX_ARCHIVE_UNCOMPRESSED_BYTES = 500 * 1024 * 1024;
 const FORMAT_SUPPORT = require('./src/format-support.json').formats;
 const FORMAT_BY_EXTENSION = new Map(FORMAT_SUPPORT.flatMap(format => format.extensions.map(extension => [extension, format])));
 const SUPPORTED_EXTENSIONS = new Set(FORMAT_BY_EXTENSION.keys());
+const WORD_LAYOUT_EXTENSIONS = new Set(['.docx', '.docm', '.dotx', '.doc', '.dot', '.dotm', '.docb', '.rtf']);
 const uploads = new Map();
 const SESSION_TOKEN = crypto.randomBytes(32).toString('base64url');
 let activeImports = 0;
@@ -182,11 +183,27 @@ async function handleImport(request, response, url) {
     if (size + currentStoredBytes() > MAX_TOTAL_STORED_BYTES) throw new Error('Недостаточно места для ещё одной открытой книги.');
     await verifyFileSignature(inputPath, extension);
     const assetUrl = relativePath => `/api/asset/${id}/${relativePath.split(path.sep).map(encodeURIComponent).join('/')}`;
-    const record = { id, name, extension, size, workDir, inputPath, createdAt: Date.now(), lastAccessAt: Date.now() };
+    const record = { id, name, extension, size, workDir, inputPath, renderedPdfPath: null, createdAt: Date.now(), lastAccessAt: Date.now() };
     uploads.set(id, record);
     const context = { workDir, assetUrl, name, extension, formatInfo: FORMAT_BY_EXTENSION.get(extension) };
     if (extension === '.pdf') return sendJson(response, 200, { id, name, extension, size, pdfUrl: `/api/file/${id}`, document: createPdfDocumentModel(name) });
-    const parsed = await parseDocument(inputPath, extension, context);
+    const exactWordLayout = WORD_LAYOUT_EXTENSIONS.has(extension) && await isMicrosoftWordAvailable();
+    let parsed = await parseDocument(inputPath, extension, context, { preferOriginalLayout: exactWordLayout });
+    if (exactWordLayout) {
+      try {
+        record.renderedPdfPath = await convertWordToPdf(inputPath, workDir);
+        return sendJson(response, 200, {
+          id, name, extension, size, ...parsed,
+          pdfUrl: `/api/rendered/${id}`,
+          renderMode: 'original-layout'
+        });
+      } catch (_) {
+        // The HTML renderer remains a usable fallback if a specific Word document cannot be exported to PDF.
+        parsed = await parseDocument(inputPath, extension, context);
+        parsed.notices.push('Не удалось сохранить точную разметку Word; открыт адаптированный текстовый вид.');
+        parsed.document.notices.push('Не удалось сохранить точную разметку Word; открыт адаптированный текстовый вид.');
+      }
+    }
     sendJson(response, 200, { id, name, extension, size, ...parsed });
   } catch (error) {
     await cleanupUpload(id);
@@ -197,11 +214,11 @@ async function handleImport(request, response, url) {
   }
 }
 
-async function parseDocument(filePath, extension, context) {
-  if (['.docx', '.docm', '.dotx'].includes(extension)) return parseDocx(filePath, context);
+async function parseDocument(filePath, extension, context, options = {}) {
+  if (['.docx', '.docm', '.dotx'].includes(extension)) return parseDocx(filePath, context, options);
   if (['.doc', '.dot', '.dotm', '.docb', '.rtf'].includes(extension)) {
     await assertMicrosoftWordAvailable();
-    return parseDocx(await convertLegacyWordToDocx(filePath, context.workDir), context);
+    return parseDocx(await convertLegacyWordToDocx(filePath, context.workDir), context, options);
   }
   if (extension === '.odt') return parsedDocument(await parseOdt(filePath), 'odt', ['ODT импортируется в ограниченном режиме: сохранены заголовки и абзацы.'], context);
   if (extension === '.txt') {
@@ -291,7 +308,7 @@ function cleanMarkupText(html) {
   return html.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/\s+/g, ' ').trim();
 }
 
-async function parseDocx(filePath, context) {
+async function parseDocx(filePath, context, { preferOriginalLayout = false } = {}) {
   const assetDir = path.join(context.workDir, 'assets');
   await fsp.mkdir(assetDir, { recursive: true });
   let imageNumber = 0;
@@ -309,7 +326,7 @@ async function parseDocx(filePath, context) {
   });
   const mammothNotices = result.messages.map(message => message.message);
   const needsWordHtml = conversionNotices.length || mammothNotices.some(message => /oMath|image\/x-(wmf|emf)|OLEObject/i.test(message));
-  if (needsWordHtml) {
+  if (needsWordHtml && !preferOriginalLayout) {
     try {
       const wordHtml = await convertWordToHtml(filePath, context);
       return parsedDocument(wordHtml, 'word-html', ['Для сохранения формул и старых рисунков использовано преобразование Microsoft Word.'], context);
@@ -336,11 +353,22 @@ async function convertWordToHtml(inputPath, context) {
   return rewriteOfficeAssetUrls(body, htmlDir, context.workDir, context.assetUrl);
 }
 
+async function convertWordToPdf(inputPath, workDir) {
+  const outputPath = path.join(workDir, 'original-layout.pdf');
+  await runWordConversion(inputPath, outputPath, 17);
+  return outputPath;
+}
+
 async function runWordConversion(inputPath, outputPath, format) {
   const quote = value => value.replace(/'/g, "''");
-  const script = `$ErrorActionPreference='Stop'; $word=$null; $doc=$null; try { $word=New-Object -ComObject Word.Application; $word.Visible=$false; $word.DisplayAlerts=0; $word.AutomationSecurity=3; $doc=$word.Documents.Open('${quote(inputPath)}',$false,$true,$false); $doc.SaveAs2('${quote(outputPath)}',${format}); } finally { if($doc){$doc.Close(0)}; if($word){$word.Quit()} }`;
+  const saveCommand = format === 17
+    ? `$doc.ExportAsFixedFormat('${quote(outputPath)}',17,$false,0,0,1,1,0,$true,$true,1,$true,$false,$false)`
+    : `$doc.SaveAs2('${quote(outputPath)}',${format})`;
+  const script = `$ErrorActionPreference='Stop'; $word=$null; $doc=$null; try { $word=New-Object -ComObject Word.Application; $word.Visible=$false; $word.DisplayAlerts=0; $word.AutomationSecurity=3; $doc=$word.Documents.Open('${quote(inputPath)}',$false,$true,$false); ${saveCommand}; } finally { if($doc){$doc.Close(0)}; if($word){$word.Quit()} }`;
   try {
-    await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { windowsHide: true, timeout: 90000 });
+    // Large teaching manuals can take longer than the normal document conversion.
+    // Keep a finite limit so the UI can report a real error rather than loading forever.
+    await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { windowsHide: true, timeout: format === 17 ? 180000 : 90000 });
   } catch (_) {
     throw new Error('Не удалось преобразовать этот Word-файл. Установите Microsoft Word или сохраните его как DOCX.');
   }
@@ -478,6 +506,11 @@ const server = http.createServer(async (request, response) => {
       const record = getUpload(url.pathname.split('/').pop());
       if (!record) return sendError(response, 404, 'Файл больше недоступен.');
       return streamFile(request, response, record.inputPath, true);
+    }
+    if (request.method === 'GET' && /^\/api\/rendered\/[^/]+$/.test(url.pathname)) {
+      const record = getUpload(url.pathname.split('/').pop());
+      if (!record?.renderedPdfPath) return sendError(response, 404, 'Точный вид документа больше недоступен.');
+      return streamFile(request, response, record.renderedPdfPath, true);
     }
     if (request.method === 'GET' && url.pathname.startsWith('/api/asset/')) {
       const [, , , id, ...segments] = url.pathname.split('/');
