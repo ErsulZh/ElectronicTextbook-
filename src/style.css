@@ -24,71 +24,8 @@ button, input { font: inherit; }
 button { -webkit-tap-highlight-color: transparent; }
 button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid #e3af4d; outline-offset: 3px; }
 
-.topbar {
-  height: 74px;
-  padding: 0 32px;
-  display: flex;
-  align-items: center;
-  gap: 20px;
-  position: relative;
-  z-index: 10;
-  background: rgba(255, 253, 247, .96);
-  border-bottom: 1px solid var(--line);
-  box-shadow: 0 1px 0 rgba(84, 63, 41, .04);
-}
-.brand {
-  color: var(--green-deep);
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  text-decoration: none;
-  font-size: 14px;
-  font-weight: 760;
-  letter-spacing: -.15px;
-  white-space: nowrap;
-}
-.brand-mark {
-  width: 34px;
-  height: 34px;
-  display: grid;
-  place-items: center;
-  border-radius: 10px;
-  color: #fff8e8;
-  background: linear-gradient(145deg, #316353, #153e36);
-  font: 700 21px/1 var(--serif);
-  box-shadow: 0 4px 12px #1d493432;
-}
-.book-name {
-  position: absolute;
-  left: 50%;
-  max-width: min(48%, 620px);
-  overflow: hidden;
-  transform: translateX(-50%);
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.2;
-  text-align: center;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.outline-btn {
-  margin-left: auto;
-  min-height: 38px;
-  padding: 8px 14px;
-  border: 1px solid #9bac9e;
-  border-radius: 9px;
-  color: var(--green);
-  background: transparent;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: .18s ease;
-}
-.outline-btn:hover { color: #fff; background: var(--green); border-color: var(--green); }
-
 .welcome {
-  min-height: calc(100vh - 74px);
+  min-height: 100vh;
   display: grid;
   grid-template-columns: minmax(0, 600px) minmax(340px, 460px);
   justify-content: center;
@@ -215,7 +152,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
 .primary-btn span { float: right; font-size: 18px; line-height: 14px; }
 .upload-hint { position: relative; z-index: 1; margin: 22px 0 0; color: #afc6b7; font-size: 10px; font-weight: 700; letter-spacing: .35px; line-height: 1.65; }
 
-#reader { height: calc(100vh - 74px); display: flex; min-width: 0; }
+#reader { height: 100vh; display: flex; min-width: 0; }
 #tocPanel {
   width: 300px;
   flex: none;
@@ -234,6 +171,8 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
 #tocSearch { width: 100%; height: 39px; padding: 8px 10px; border: 1px solid #dbd2c5; border-radius: 8px; color: #27463b; background: #fffefa; font-size: 12px; outline-color: #8dab96; }
 #tocSearch::placeholder { color: #929891; }
 #toc { display: grid; gap: 3px; margin-top: 15px; padding-bottom: 12px; }
+.toc-new-file { width: 100%; margin-top: 10px; padding: 9px 11px; border: 1px solid #cfc4b5; border-radius: 8px; color: #365448; background: #fffdf7; font-size: 11px; font-weight: 800; cursor: pointer; }
+.toc-new-file:hover { color: #fff; border-color: var(--green); background: var(--green); }
 .toc-item { width: 100%; padding: 10px 11px; border: 1px solid transparent; border-radius: 8px; color: #53665b; background: transparent; text-align: left; font-size: 12px; font-weight: 600; line-height: 1.38; cursor: pointer; overflow-wrap: anywhere; transition: .14s ease; }
 .toc-item:hover { border-color: #d4e0d2; color: #1f4738; background: #eef4eb; }
 .toc-item.active { color: #173f31; background: #dcead9; font-weight: 800; }
@@ -259,7 +198,9 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
 .reading-area::after { bottom: -22%; left: -8%; }
 .toc-toggle { position: absolute; top: 18px; left: 20px; z-index: 4; min-height: 36px; padding: 7px 12px; border: 1px solid #d9cfbe; border-radius: 9px; color: #365448; background: #faf7f0e8; box-shadow: 0 3px 8px #5a45351a; font-size: 11px; font-weight: 800; cursor: pointer; }
 .toc-toggle:hover { background: #fffdf7; }
-.book-stage { position: relative; z-index: 1; display: grid; place-items: center; min-height: 0; max-width: 100%; }
+.book-stage { position: relative; z-index: 1; display: grid; place-items: center; width: fit-content; min-height: 0; max-width: 100%; }
+.book-stage::before { content: ''; position: absolute; z-index: 7; top: 1px; bottom: 1px; left: 50%; width: 19px; transform: translateX(-50%); pointer-events: none; background: linear-gradient(90deg, rgba(67, 47, 31, .27), rgba(77, 55, 35, .07) 31%, rgba(255,255,255,.16) 52%, rgba(65, 46, 31, .10) 75%, rgba(57, 40, 27, .31)); box-shadow: -9px 0 13px -10px rgba(49, 30, 16, .95), 9px 0 13px -10px rgba(49, 30, 16, .95); opacity: .84; }
+.book-stage::after { content: ''; position: absolute; z-index: 8; top: 2px; bottom: 2px; left: 50%; width: 1px; transform: translateX(-50%); pointer-events: none; background: rgba(56, 38, 23, .36); }
 #book { display: block; filter: drop-shadow(0 20px 20px #543f2e4d); }
 .stf__parent { margin: auto; }
 .stf__item { box-shadow: inset 0 0 0 1px #d7ccbd; }
@@ -294,15 +235,6 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
 .book-page table.force-fit td, .book-page table.force-fit th { padding: 1px; font-size: 8px; line-height: 1.05; }
 .pdf-wait { height: 100%; display: grid; place-content: center; color: #63786c; font-size: 13px; font-weight: 600; text-align: center; }
 .import-notice { position: absolute; top: 63px; left: 50%; z-index: 4; width: max-content; max-width: min(660px, 78vw); margin: 0; padding: 8px 12px; transform: translateX(-50%); border: 1px solid #ddc995; border-radius: 8px; color: #6c552d; background: #fff8e9ef; box-shadow: 0 4px 11px #5b483122; font-size: 11px; line-height: 1.35; text-align: center; }
-.controls { position: relative; z-index: 2; display: flex; align-items: center; justify-content: center; gap: 12px; margin: 17px 0 0; color: #506259; font-size: 11px; font-weight: 750; }
-.round { width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid #dacdbd; border-radius: 50%; color: #315446; background: #fbf8f0; box-shadow: 0 3px 6px #5c44371a; font-size: 18px; cursor: pointer; transition: .15s ease; }
-.round:hover:not(:disabled) { color: #fff; border-color: var(--green); background: var(--green); transform: translateY(-1px); }
-.round:disabled { opacity: .4; cursor: not-allowed; }
-.small-round { width: 29px; height: 29px; font-size: 14px; }
-.jump-label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
-.jump-label input { width: 48px; height: 30px; padding: 5px; border: 1px solid #d5caba; border-radius: 6px; color: #385347; background: #fffdf8; font-size: 11px; text-align: center; }
-.reader-tip { position: relative; z-index: 1; margin: 10px 0 0; color: #6d786f; font-size: 10px; font-weight: 600; }
-
 #loading { position: fixed; inset: 0; z-index: 30; display: grid; place-content: center; gap: 12px; color: #f9f4e9; background: #153c35f2; text-align: center; }
 #loading[hidden], .welcome[hidden], #reader[hidden] { display: none; }
 #loading strong { font: 700 23px var(--serif); }
@@ -319,19 +251,14 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
 }
 @media (max-width: 760px) {
   body { overflow: auto; }
-  .topbar { height: 65px; padding: 0 16px; }
-  .brand { font-size: 12px; }
-  .brand-mark { width: 30px; height: 30px; font-size: 18px; border-radius: 8px; }
-  .book-name { display: none; }
-  .outline-btn { min-height: 34px; padding: 7px 9px; font-size: 10px; }
-  .welcome { min-height: calc(100vh - 65px); padding: 38px 19px 50px; }
+  .welcome { min-height: 100vh; padding: 38px 19px 50px; }
   .welcome h1 { font-size: clamp(35px, 10vw, 47px); letter-spacing: -1.3px; }
   .welcome-lead { font-size: 14px; }
   .feature-list { gap: 7px; }
   .feature-list span { font-size: 10px; }
   .upload-card { padding: 26px 24px; border-radius: 16px; box-shadow: 10px 13px 0 #d2b99388, 0 18px 45px #4b382d35; }
   .upload-card h2 { font-size: 26px; }
-  #reader { height: calc(100vh - 65px); }
+  #reader { height: 100vh; }
   #tocPanel { position: absolute; z-index: 8; width: min(86vw, 320px); height: 100%; box-shadow: 8px 0 22px #362a2140; }
   .toc-toggle { top: 13px; left: 13px; }
   .import-notice { top: 55px; max-width: 88vw; }
@@ -340,11 +267,9 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
   .book-page h1 { font-size: 26px; }
   .book-page h2 { font-size: 20px; }
   .book-page p, .book-page li { font-size: 12.5px; line-height: 1.58; }
-  .controls { gap: 8px; margin-top: 12px; }
-  .reader-tip { display: none; }
+  .book-stage::before, .book-stage::after { display: none; }
 }
 @media (max-width: 400px) {
-  .outline-btn { max-width: 118px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .feature-list span { padding: 7px 9px; }
   .book-page { padding-right: 24px; padding-left: 24px; }
   .pdf-page { padding: 0; }

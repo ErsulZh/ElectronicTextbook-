@@ -8,15 +8,6 @@
   <link rel="stylesheet" href="src/style.css">
 </head>
 <body>
-  <header class="topbar">
-    <a class="brand" href="/" aria-label="На главную страницу">
-      <span class="brand-mark" aria-hidden="true">Е</span>
-      <span>Электронный учебник</span>
-    </a>
-    <div id="bookName" class="book-name">Новая книга</div>
-    <button id="newFile" class="outline-btn" type="button">Открыть другой файл</button>
-  </header>
-
   <main>
     <section id="welcome" class="welcome" aria-labelledby="welcomeTitle">
       <div class="welcome-intro">
@@ -60,6 +51,7 @@
         <label class="search-label" for="tocSearch">Поиск по содержанию</label>
         <input id="tocSearch" type="search" placeholder="Найти тему">
         <nav id="toc" aria-label="Темы учебника"></nav>
+        <button id="newFile" class="toc-new-file" type="button">Открыть другой файл</button>
       </aside>
 
       <div class="reading-area">
@@ -68,14 +60,6 @@
         <div class="book-stage">
           <div id="book" class="book" aria-label="Страницы учебника"></div>
         </div>
-        <div class="controls" aria-label="Навигация по страницам">
-          <button id="prev" class="round" type="button" title="Предыдущая страница" aria-label="Предыдущая страница">←</button>
-          <span id="pageCounter" aria-live="polite">1 / 1</span>
-          <label class="jump-label">Страница <input id="pageJump" type="number" min="1" value="1" inputmode="numeric"></label>
-          <button id="goPage" class="round small-round" type="button" title="Перейти к странице" aria-label="Перейти к странице">↵</button>
-          <button id="next" class="round" type="button" title="Следующая страница" aria-label="Следующая страница">→</button>
-        </div>
-        <p class="reader-tip">Листайте кнопками, стрелками клавиатуры или потяните угол страницы.</p>
       </div>
     </section>
   </main>

@@ -63,13 +63,9 @@ function formatStatusLabel(status) {
 
 $('#openFile').onclick = chooseFile;
 $('#newFile').onclick = chooseFile;
-$('#prev').onclick = () => pageFlip?.flipPrev('bottom');
-$('#next').onclick = () => pageFlip?.flipNext('bottom');
 $('#tocToggle').onclick = () => setTocPanelVisibility($('#tocPanel').hidden, { moveFocus: true });
 $('#closeToc').onclick = () => setTocPanelVisibility(false, { moveFocus: true });
 $('#tocSearch').oninput = filterToc;
-$('#goPage').onclick = goToPage;
-$('#pageJump').onkeydown = event => { if (event.key === 'Enter') goToPage(); };
 const narrowViewport = window.matchMedia('(max-width: 799px)');
 narrowViewport.addEventListener('change', event => { setTocPanelVisibility(!event.matches); });
 $('#fileInput').onchange = event => {
@@ -145,17 +141,6 @@ function applyPreparedBook(prepared) {
   activePdf = prepared.pdf;
 }
 
-function hydratePdfToc(prepared) {
-  if (!prepared.tocPromise) return;
-  void prepared.tocPromise.then(discoveredToc => {
-    if (activePdf !== prepared.pdf || !discoveredToc?.length) return;
-    toc = discoveredToc;
-    renderToc();
-  }).catch(() => {
-    // The initial "Начало документа" item remains usable if a long PDF is closed before scanning finishes.
-  });
-}
-
 function captureBookState() {
   return { pages, toc, sourceBlocks, documentLayout, documentTocHints, importNotices, pdf: activePdf };
 }
@@ -204,14 +189,13 @@ async function importFile(selectedFile) {
     }
     const previousPdf = previousState.pdf;
     applyPreparedBook(prepared);
-    $('#bookName').textContent = imported.name;
+    document.title = `${imported.name} — Электронный учебник`;
     $('#welcome').hidden = true;
     $('#reader').hidden = false;
     setTocPanelVisibility(!narrowViewport.matches);
     renderToc();
     renderImportNotice();
     createBook();
-    hydratePdfToc(prepared);
     const previousImportId = currentImportId;
     currentImportId = imported.id;
     if (previousImportId && previousImportId !== currentImportId) void releaseImport(previousImportId);
@@ -389,22 +373,22 @@ function splitList(list, itemsPerPart = 6, itemTextLimit = 420) {
 }
 
 function getPageLayout() {
-  const readerWidth = document.querySelector('.reading-area')?.clientWidth || 0;
+  const readingArea = document.querySelector('.reading-area');
+  const readerWidth = readingArea?.clientWidth || 0;
   const availableWidth = readerWidth > 320
     ? readerWidth
     : Math.max(360, window.innerWidth - (window.innerWidth > 760 ? 300 : 0));
   const narrow = availableWidth <= 760;
-  const availableHeight = Math.max(500, window.innerHeight - 74);
-  // Leave room for the controls, but make the desktop spread use the screen rather than
-  // looking like a small card in the middle of the reader.
-  const maxPageHeight = Math.min(760, Math.floor(availableHeight * (narrow ? 0.70 : 0.85)));
-  const totalWidth = Math.min(availableWidth * (narrow ? 0.92 : 0.90), narrow ? 620 : 1160);
+  const availableHeight = Math.max(500, (readingArea?.clientHeight || window.innerHeight) - (narrow ? 40 : 34));
+  // The reader has no header or footer controls: reserve only a narrow frame around the book.
+  const maxPageHeight = Math.min(960, Math.floor(availableHeight * (narrow ? 0.90 : 0.97)));
+  const totalWidth = Math.min(availableWidth * (narrow ? 0.92 : 0.95), narrow ? 660 : 1450);
   const idealWidth = Math.floor(maxPageHeight / Math.SQRT2);
   const maxPageWidth = Math.floor(totalWidth / (narrow ? 1 : 2));
-  const width = Math.max(280, Math.min(520, idealWidth, maxPageWidth));
+  const width = Math.max(280, Math.min(720, idealWidth, maxPageWidth));
   return {
     width,
-    height: Math.max(410, Math.min(maxPageHeight, Math.floor(width * Math.SQRT2))),
+    height: Math.max(410, Math.min(960, maxPageHeight, Math.floor(width * Math.SQRT2))),
     portrait: narrow
   };
 }
@@ -543,7 +527,8 @@ function tableRowAsParagraphs(table) {
 }
 
 function isContentsHeading(text) {
-  return /^(мазмұны|содержание|оглавление|contents?)$/i.test(text);
+  const normalized = cleanText(text).replace(/[.:—–-]+$/g, '').trim();
+  return /^(мазмұны|мазмуны|содержание|оглавление|contents?|table\s+of\s+contents)$/i.test(normalized);
 }
 
 function findBodyStartIndex(blocks, contentsIndex) {
@@ -553,7 +538,7 @@ function findBodyStartIndex(blocks, contentsIndex) {
     const tag = node.tagName?.toLowerCase();
     // Word contents are often styled as H2/H3. After a contents page, only a true document
     // start (introduction, chapter, or the next H1) may establish the start of navigation.
-    if (tag === 'h1' || /^(кіріспе|введение|introduction)$/i.test(text) || /^\d+\s*[-–]?\s*(тарау|глава|бөлім|chapter)\b/i.test(text)) return index;
+    if (tag === 'h1' || /^(кіріспе|введение|introduction)$/i.test(text) || /^\d+\s*[-–]?\s*(тарау|глава|бөлім|chapter)(?:\s|$)/i.test(text)) return index;
   }
   return Number.POSITIVE_INFINITY;
 }
@@ -578,8 +563,8 @@ function getTopic(node, hintsByTitle = new Map(), allowInferred = true) {
   const boldText = [...node.querySelectorAll('strong,b')].map(item => cleanText(item.textContent)).join('');
   const mostlyBold = node.tagName === 'P' && boldText.length >= text.replace(/\s/g, '').length * 0.88;
   const numbered = /^(\d+)\s*\.\s*(\d+)(?:\s*\.\s*(\d+))?\.?\s+/.exec(text);
-  const chapter = /^\d+\s*[-–]?\s*(тарау|глава|бөлім|chapter)\b/i.test(text);
-  const lesson = /^(?:лекция|дәріс|lesson|тема|тақырып|модуль|module|раздел|бөлім)\s*(?:№|n[oº.]?\s*)?\d+\b/i.test(text);
+  const chapter = /^\d+\s*[-–]?\s*(тарау|глава|бөлім|chapter)(?:\s|$)/i.test(text);
+  const lesson = /^(?:лекция|дәріс|lesson|тема|тақырып|модуль|module|раздел|бөлім)\s*(?:№|n[oº.]?\s*)?\d+(?:\s|$)/i.test(text);
   const letters = (text.match(/[A-Za-zА-ЯӘІҢҒҮҰҚӨҺа-яәіңғүұқөһ]/g) || []).length;
   const capitals = (text.match(/[A-ZА-ЯӘІҢҒҮҰҚӨҺ]/g) || []).length;
   const upperCaseTitle = letters > 4 && capitals / letters > 0.62;
@@ -596,53 +581,196 @@ async function loadPdf(file) {
     if (pdf.numPages > 1200) throw new Error('PDF содержит больше 1200 страниц. Разделите материал на части.');
     const nextPages = Array.from({ length: pdf.numPages }, (_, index) => ({ type: 'pdf', pdf, pageNumber: index + 1 }));
     const nextToc = [];
-    const outline = await pdf.getOutline();
-    if (outline?.length) {
-      const flatten = async (items, level = 1) => {
-        for (const item of items) {
-          let page = null;
-          try { const destination = typeof item.dest === 'string' ? await pdf.getDestination(item.dest) : item.dest; page = destination?.[0] ? await pdf.getPageIndex(destination[0]) : null; } catch (_) { /* Skip a broken bookmark instead of linking it to page one. */ }
-          if (Number.isInteger(page) && page >= 0 && page < pdf.numPages) nextToc.push({ title: item.title || 'Раздел', level, page });
-          if (item.items?.length) await flatten(item.items, level + 1);
-        }
-      };
-      await flatten(outline);
+    const originalWordLayout = file.renderMode === 'original-layout';
+    if (originalWordLayout) {
+      // Word exports every paragraph marked as a heading into the PDF outline. Title pages,
+      // UDC numbers and ISBNs therefore become false "chapters". A printed contents page is
+      // a stronger source and is required before we create navigation for Word-layout books.
+      nextToc.push(...await detectPrintedContents(pdf));
+    } else {
+      const outline = await pdf.getOutline();
+      if (outline?.length) {
+        const flatten = async (items, level = 1) => {
+          for (const item of items) {
+            let page = null;
+            try { const destination = typeof item.dest === 'string' ? await pdf.getDestination(item.dest) : item.dest; page = destination?.[0] ? await pdf.getPageIndex(destination[0]) : null; } catch (_) { /* Skip a broken bookmark instead of linking it to page one. */ }
+            if (Number.isInteger(page) && page >= 0 && page < pdf.numPages) nextToc.push({ title: item.title || 'Раздел', level, page });
+            if (item.items?.length) await flatten(item.items, level + 1);
+          }
+        };
+        await flatten(outline);
+      }
+      if (!nextToc.length) nextToc.push(...await detectPdfToc(pdf));
     }
-    if (!nextToc.length) nextToc.push(...await detectPdfToc(pdf));
-    const tocPromise = !nextToc.length && file.renderMode === 'original-layout'
-      ? detectPdfTocFromHints(pdf, file.document?.tocHints || [])
-      : null;
     const nextImportNotices = [];
     if (!nextToc.length) {
       nextToc.push({ title: 'Начало документа', level: 1, page: 0 });
-      nextImportNotices.push('В PDF нет встроенного оглавления. Для перехода используйте поле «Стр.» внизу книги.');
+      nextImportNotices.push(originalWordLayout ? 'Не найдено напечатанное содержание: автоматические темы не добавлены, чтобы не показывать случайный текст.' : 'В PDF нет встроенного оглавления.');
     }
-    return { pages: nextPages, toc: nextToc, sourceBlocks: [], documentLayout: getPageLayout(), documentTocHints: [], importNotices: nextImportNotices, pdf, tocPromise };
+    return { pages: nextPages, toc: nextToc, sourceBlocks: [], documentLayout: getPageLayout(), documentTocHints: [], importNotices: nextImportNotices, pdf };
   } catch (error) {
     await disposePdf(pdf);
     throw error;
   }
 }
 
-async function detectPdfTocFromHints(pdf, hints) {
-  const remaining = [...new Map(hints
-    .map(hint => ({ title: cleanText(hint.title || ''), level: hint.level || 1 }))
-    .filter(hint => hint.title.length >= 4 && !isContentsHeading(hint.title))
-    .map(hint => [hint.title.toLocaleLowerCase(), hint])).values()];
-  if (!remaining.length) return [];
-  const topics = [];
-  for (let pageNumber = 1; pageNumber <= Math.min(pdf.numPages, 600) && remaining.length; pageNumber++) {
-    const textContent = await pdf.getPage(pageNumber).then(page => page.getTextContent());
-    const pageText = cleanText(textContent.items.map(item => item.str).join(' ')).toLocaleLowerCase();
-    for (let index = remaining.length - 1; index >= 0; index--) {
-      const hint = remaining[index];
-      if (pageText.includes(hint.title.toLocaleLowerCase())) {
-        topics.push({ ...hint, page: pageNumber - 1 });
-        remaining.splice(index, 1);
-      }
+function pdfTextLineDetails(items) {
+  const grouped = new Map();
+  items.filter(item => item.str?.trim()).forEach(item => {
+    const y = Math.round((item.transform?.[5] || 0) * 2) / 2;
+    const row = grouped.get(y) || [];
+    row.push({ x: item.transform?.[4] || 0, text: item.str });
+    grouped.set(y, row);
+  });
+  return [...grouped.entries()]
+    .sort((a, b) => b[0] - a[0])
+    .map(([y, row]) => ({ y, text: cleanText(row.sort((a, b) => a.x - b.x).map(part => part.text).join(' ')) }))
+    .filter(line => line.text);
+}
+
+function parsePrintedPageNumber(value) {
+  const compact = value.replace(/\s/g, '');
+  return /^\d{1,4}$/.test(compact) ? Number(compact) : null;
+}
+
+function parsePrintedContentsEntry(line) {
+  const match = /^(.*?\S)\s+(\d(?:\s*\d){0,3})\s*$/.exec(line);
+  if (!match) return null;
+  const title = cleanText(match[1].replace(/[.·•…\s]+$/g, ''));
+  const printedPage = parsePrintedPageNumber(match[2]);
+  const letters = (title.match(/[A-Za-zА-ЯӘІҢҒҮҰҚӨҺа-яәіңғүұқөһ]/g) || []).length;
+  if (!printedPage || title.length < 4 || letters < 3) return null;
+  return { title, printedPage };
+}
+
+function isStandalonePrintedNumber(text) {
+  return parsePrintedPageNumber(text) !== null;
+}
+
+function isDocumentBodyStart(text) {
+  const normalized = cleanText(text).replace(/^\d+\s+/, '');
+  return /^(кіріспе|введение|introduction)(?:\s|$)/i.test(normalized)
+    || /^\d+\s*[-–.]?\s*(тарау|глава|бөлім|chapter)(?:\s|$)/i.test(normalized);
+}
+
+function isContentsContinuation(text) {
+  const letters = (text.match(/[A-Za-zА-ЯӘІҢҒҮҰҚӨҺа-яәіңғүұқөһ]/g) || []).length;
+  return text.length >= 3 && text.length <= 240 && letters >= 3 && !isContentsHeading(text);
+}
+
+function appendTocText(left, right) {
+  const joined = cleanText(`${left} ${right}`)
+    .replace(/\s+([,.;:])/g, '$1')
+    .replace(/-\s+(?=[A-Za-zА-ЯӘІҢҒҮҰҚӨҺа-яәіңғүұқөһ])/g, '-');
+  return joined.slice(0, 260);
+}
+
+async function detectPrintedContents(pdf) {
+  const entries = [];
+  let contentsStarted = false;
+  let contentsStartPage = 0;
+  let activeEntry = null;
+  let pendingTitle = '';
+  let consecutiveNonEntries = 0;
+  const commitActive = () => {
+    if (!activeEntry) return;
+    const title = cleanText(activeEntry.title);
+    if (title.length >= 4 && !isContentsHeading(title)) entries.push({ title, printedPage: activeEntry.printedPage });
+    activeEntry = null;
+  };
+  const finish = () => {
+    commitActive();
+    const unique = new Map();
+    entries.forEach(entry => unique.set(`${entry.title.toLocaleLowerCase()}|${entry.printedPage}`, entry));
+    return [...unique.values()];
+  };
+  const resolve = async () => {
+    const rawEntries = finish();
+    if (rawEntries.length < 2) return [];
+    return mapPrintedContentsToPages(pdf, rawEntries);
+  };
+
+  // A contents block may occupy several consecutive leaves. We do not treat each page
+  // break as a topic: it ends only at a real body heading or after unrelated body text.
+  for (let pageNumber = 1; pageNumber <= Math.min(pdf.numPages, 32); pageNumber++) {
+    const pdfPage = await pdf.getPage(pageNumber);
+    const details = pdfTextLineDetails((await pdfPage.getTextContent()).items);
+    let firstLineIndex = 0;
+    if (!contentsStarted) {
+      const headingIndex = details.findIndex(line => isContentsHeading(line.text));
+      if (headingIndex < 0) continue;
+      contentsStarted = true;
+      contentsStartPage = pageNumber;
+      firstLineIndex = headingIndex + 1;
     }
+
+    const entriesBeforePage = entries.length;
+    let previousLine = null;
+    for (let index = firstLineIndex; index < details.length; index++) {
+      const line = details[index];
+      const text = line.text;
+      const verticalGap = previousLine ? previousLine.y - line.y : 0;
+      previousLine = line;
+      if (isContentsHeading(text) || isStandalonePrintedNumber(text)) continue;
+
+      const parsed = parsePrintedContentsEntry(text);
+      if (parsed) {
+        commitActive();
+        activeEntry = { title: pendingTitle ? appendTocText(pendingTitle, parsed.title) : parsed.title, printedPage: parsed.printedPage };
+        pendingTitle = '';
+        consecutiveNonEntries = 0;
+        continue;
+      }
+      if ((entries.length || activeEntry) && isDocumentBodyStart(text)) return resolve();
+
+      // A very large blank interval followed by normal prose marks the end of a contents
+      // block even when the document does not have an explicit “Introduction” heading.
+      if (verticalGap > 60 && entries.length >= 2 && activeEntry && isContentsContinuation(text)) {
+        return resolve();
+      }
+      if (activeEntry && isContentsContinuation(text)) {
+        activeEntry.title = appendTocText(activeEntry.title, text);
+        consecutiveNonEntries = 0;
+        continue;
+      }
+      if (!activeEntry && isContentsContinuation(text)) {
+        pendingTitle = appendTocText(pendingTitle, text);
+        consecutiveNonEntries = 0;
+        continue;
+      }
+      consecutiveNonEntries++;
+      if (entries.length >= 2 && consecutiveNonEntries >= 2) return resolve();
+    }
+
+    // The following physical page may continue a long contents list. Only end the block
+    // when that entire page contains no numbered entry; a page break itself is not a topic.
+    if (pageNumber > contentsStartPage && entries.length === entriesBeforePage && !activeEntry) return resolve();
   }
-  return topics.sort((a, b) => a.page - b.page || a.level - b.level);
+  return contentsStarted ? resolve() : [];
+}
+
+function topicLevelFromTitle(title) {
+  if (/^(кіріспе|введение|introduction)(?:\s|$)/i.test(title) || /^\d+\s*[-–.]?\s*(тарау|глава|бөлім|chapter)(?:\s|$)/i.test(title)) return 1;
+  const numbering = /^(\d+)(?:\s*\.\s*(\d+))?(?:\s*\.\s*(\d+))?/.exec(title);
+  if (!numbering) return 1;
+  return numbering[3] ? 3 : numbering[2] ? 2 : 1;
+}
+
+async function mapPrintedContentsToPages(pdf, entries) {
+  const wanted = new Set(entries.map(entry => entry.printedPage));
+  const pageByPrintedNumber = new Map();
+  for (let pageNumber = 1; pageNumber <= Math.min(pdf.numPages, 600) && pageByPrintedNumber.size < wanted.size; pageNumber++) {
+    const details = pdfTextLineDetails((await (await pdf.getPage(pageNumber)).getTextContent()).items);
+    const edgeLines = [...details.slice(0, 3), ...details.slice(-3)].map(line => parsePrintedPageNumber(line.text)).filter(Number.isInteger);
+    edgeLines.forEach(number => { if (wanted.has(number) && !pageByPrintedNumber.has(number)) pageByPrintedNumber.set(number, pageNumber - 1); });
+  }
+  return entries
+    .map(entry => {
+      const page = pageByPrintedNumber.get(entry.printedPage) ?? (entry.printedPage >= 1 && entry.printedPage <= pdf.numPages ? entry.printedPage - 1 : null);
+      return page === null ? null : { title: entry.title, level: topicLevelFromTitle(entry.title), page };
+    })
+    .filter(Boolean)
+    .filter((topic, index, array) => index === 0 || topic.title !== array[index - 1].title || topic.page !== array[index - 1].page);
 }
 
 async function detectPdfToc(pdf) {
@@ -654,7 +782,7 @@ async function detectPdfToc(pdf) {
     const pdfPage = await pdf.getPage(pageNumber);
     const textContent = await pdfPage.getTextContent();
     const lines = pdfTextLines(textContent.items);
-    const isContentsPage = lines.some(line => /^(мазмұны|содержание|оглавление|contents?)$/i.test(cleanText(line)));
+    const isContentsPage = lines.some(line => isContentsHeading(line));
     if (!isContentsPage) continue;
     for (const line of lines) {
       const match = /^(.*?)\s*(?:[.·•…\s]{3,})\s*(\d{1,4})\s*$/.exec(cleanText(line));
@@ -670,14 +798,7 @@ async function detectPdfToc(pdf) {
 }
 
 function pdfTextLines(items) {
-  const grouped = new Map();
-  items.filter(item => item.str?.trim()).forEach(item => {
-    const y = Math.round((item.transform?.[5] || 0) * 2) / 2;
-    const row = grouped.get(y) || [];
-    row.push({ x: item.transform?.[4] || 0, text: item.str });
-    grouped.set(y, row);
-  });
-  return [...grouped.entries()].sort((a, b) => b[0] - a[0]).map(([, row]) => row.sort((a, b) => a.x - b.x).map(part => part.text).join(' '));
+  return pdfTextLineDetails(items).map(line => line.text);
 }
 
 function renderToc() {
@@ -706,12 +827,6 @@ function filterToc() {
   });
 }
 
-function goToPage() {
-  const page = Number($('#pageJump').value);
-  if (!pageFlip || !Number.isInteger(page) || page < 1 || page > pages.length) return;
-  pageFlip.flip(page - 1, 'top');
-}
-
 function createBook({ preservePage = false } = {}) {
   const currentPage = preservePage ? pageFlip?.getCurrentPageIndex?.() || 0 : 0;
   const oldBook = $('#book'); const bookStage = oldBook.parentElement; const book = document.createElement('div'); book.id = 'book';
@@ -729,7 +844,7 @@ function createBook({ preservePage = false } = {}) {
   leaves.forEach(leaf => book.append(leaf));
   const layout = documentLayout || getPageLayout();
   pageFlip = new PageFlip(book, {
-    width: layout.width, height: layout.height, size: 'fixed', minWidth: 280, maxWidth: 600, minHeight: 410, maxHeight: 760,
+    width: layout.width, height: layout.height, size: 'fixed', minWidth: 280, maxWidth: 720, minHeight: 410, maxHeight: 960,
     drawShadow: true, maxShadowOpacity: 0.55, flippingTime: 780, usePortrait: layout.portrait, showCover: false,
     mobileScrollSupport: true, swipeDistance: 25, startZIndex: 5, disableFlipByClick: false
   });
@@ -774,9 +889,12 @@ function updateReaderState(page) {
   const portrait = documentLayout?.portrait ?? getPageLayout().portrait;
   const firstVisible = Math.min(current + 1, count);
   const lastVisible = portrait ? firstVisible : Math.min(current + 2, count);
-  $('#pageCounter').textContent = `${portrait || firstVisible === lastVisible ? firstVisible : `${firstVisible}–${lastVisible}`} / ${count}`;
-  $('#pageJump').max = String(count); $('#pageJump').value = String(Math.min(current + 1, count));
-  $('#prev').disabled = current <= 0; $('#next').disabled = current >= count - 1;
+  const book = $('#book');
+  if (book) {
+    book.dataset.currentPage = String(firstVisible);
+    book.dataset.lastVisible = String(lastVisible);
+    book.setAttribute('aria-label', portrait || firstVisible === lastVisible ? `Страница ${firstVisible} из ${count}` : `Разворот: страницы ${firstVisible}–${lastVisible} из ${count}`);
+  }
   let topicIndex = -1; toc.forEach((topic, index) => { if (topic.page <= lastVisible - 1) topicIndex = index; }); setActiveTopic(topicIndex);
 }
 function setActiveTopic(index) { document.querySelectorAll('.toc-item').forEach((button, i) => button.classList.toggle('active', i === index)); }

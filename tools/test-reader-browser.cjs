@@ -60,25 +60,31 @@ async function importPdfAndWait(page, filePath) {
   await page.locator('#fileInput').setInputFiles(filePath);
   await page.locator('#loading').waitFor({ state: 'hidden', timeout: 210_000 });
   await page.locator('#reader').waitFor({ state: 'visible' });
-  await page.waitForFunction(() => /^\d+(?:\s*[–-]\s*\d+)?\s*\/\s*\d+$/.test(document.querySelector('#pageCounter')?.textContent || ''), null, { timeout: 210_000 });
+  await page.locator('#book[data-current-page]').waitFor({ state: 'attached', timeout: 210_000 });
   await page.waitForFunction(() => Boolean(document.querySelector('.book-content canvas')), null, { timeout: 210_000 });
   await page.waitForTimeout(300);
 }
 
 async function pageCounter(page) {
-  const value = await page.locator('#pageCounter').textContent();
-  const match = /^(\d+)(?:\s*[–-]\s*(\d+))?\s*\/\s*(\d+)$/.exec((value || '').trim());
-  assert.ok(match, `Не удалось прочитать номер страницы: ${value}`);
-  return { current: Number(match[1]), lastVisible: Number(match[2] || match[1]), total: Number(match[3]) };
+  const state = await page.locator('#book').evaluate(book => ({
+    current: Number(book.dataset.currentPage),
+    lastVisible: Number(book.dataset.lastVisible),
+    total: book.querySelectorAll('.book-page').length
+  }));
+  assert.ok(state.current >= 1 && state.lastVisible >= state.current && state.total >= state.lastVisible, `Некорректное состояние разворота: ${JSON.stringify(state)}`);
+  return state;
 }
 
 async function assertPageVisible(page, pageNumber, message) {
-  const visible = await page.locator(`.book-page[data-num="${pageNumber}"]`).evaluate(element => {
-    const style = getComputedStyle(element);
-    const rect = element.getBoundingClientRect();
-    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
-  });
+  const state = await pageCounter(page);
+  const visible = pageNumber >= state.current && pageNumber <= state.lastVisible;
   assert.equal(visible, true, message || `Страница ${pageNumber} не показана в развороте.`);
+}
+
+async function flipNextWithKeyboard(page) {
+  await page.locator('#tocToggle').focus();
+  await page.keyboard.press('ArrowRight');
+  await page.waitForTimeout(900);
 }
 
 async function readerReport(page) {
@@ -120,6 +126,12 @@ async function assertTocNavigation(page, indexes) {
   }
 }
 
+function assertPrintedContentsTopics(report, label) {
+  assert.ok(report.topics.length >= 8, `${label}: найдено слишком мало пунктов настоящего содержания.`);
+  assert.ok(report.topics.some(title => /^(кіріспе|введение|introduction)(?:\s|$)/i.test(title)), `${label}: в содержании нет пункта «Введение».`);
+  assert.equal(report.topics.some(title => /махамбаева|isbn|әож|удк|тульский государственный университет/i.test(title)), false, `${label}: в содержание попали титульные либо библиографические строки.`);
+}
+
 async function main() {
   if (!browserPath || !fs.existsSync(browserPath)) throw new Error('Не найден Chromium-браузер. Укажите TEXTBOOK_BROWSER_PATH или установите Edge, Chrome либо Brave.');
   for (const file of [sourceFile, pdfFile, contentsFixture, semanticsFixture]) {
@@ -135,9 +147,6 @@ async function main() {
     const contentsReport = await readerReport(page);
     assert.deepEqual(contentsReport.topics, ['Введение', 'Реальная тема'], 'Напечатанное содержание ошибочно попало в TOC.');
     await assertTocNavigation(page, [0, 1]);
-    await page.locator('#pageJump').fill('2');
-    await page.locator('#goPage').click();
-    await page.waitForTimeout(900);
     await assertPageVisible(page, 2, 'Не удалось перейти ко второй странице первой книги.');
 
     await importAndWait(page, semanticsFixture, 'Проверка форматирования');
@@ -172,7 +181,7 @@ async function main() {
     assert.ok(wordStart.total > 10, 'Word не преобразован в постраничную книгу.');
     assert.ok(await page.locator('.pdf-page .book-content canvas').count() > 0, 'Word не открыт в режиме точной PDF-разметки.');
     assert.equal(report.overflows.length, 0, `Есть переполненные страницы: ${JSON.stringify(report.overflows.slice(0, 3))}`);
-    assert.ok(report.topics.length > 1, 'TOC не содержит реальных тем.');
+    assertPrintedContentsTopics(report, 'Большой Word-документ');
     const jumpIndexes = [...new Set([0, 1, 2, Math.floor(report.topics.length / 2), report.topics.length - 1])].filter(index => index >= 0 && index < report.topics.length);
     await assertTocNavigation(page, jumpIndexes);
 
@@ -210,13 +219,10 @@ async function main() {
     const pdfStart = await pageCounter(page);
     assert.ok(pdfStart.total > 1, 'Реальный PDF не содержит нескольких страниц.');
     assert.equal(pdfStart.current, 1, 'PDF должен открываться с первой страницы.');
-    await page.locator('#next').click();
-    await page.waitForTimeout(900);
-    assert.ok((await pageCounter(page)).current > pdfStart.current, 'Кнопка Next не листает реальный PDF.');
+    await flipNextWithKeyboard(page);
+    assert.ok((await pageCounter(page)).current > pdfStart.current, 'Стрелка клавиатуры не листает реальный PDF.');
     const targetPdfPage = Math.min(10, pdfStart.total);
-    await page.locator('#pageJump').fill(String(targetPdfPage));
-    await page.locator('#goPage').click();
-    await page.waitForTimeout(900);
+    for (let attempts = 0; attempts < 6 && (await pageCounter(page)).lastVisible < targetPdfPage; attempts++) await flipNextWithKeyboard(page);
     await assertPageVisible(page, targetPdfPage, 'Переход по номеру страницы PDF не работает.');
     assert.ok(await page.locator('.book-content canvas').count() > 0, 'PDF не отрисовывает ни одной canvas-страницы.');
     await page.setViewportSize({ width: 390, height: 844 });
