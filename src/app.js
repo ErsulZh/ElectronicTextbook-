@@ -1,8 +1,7 @@
 import * as pdfjsLib from '/node_modules/pdfjs-dist/build/pdf.mjs';
 import { PageFlip } from '/node_modules/page-flip/dist/js/page-flip.module.js';
 
-// PDF.js 5 uses a recently added Map helper that is absent in the Chromium
-// version bundled with some Electron releases. Keep the reader compatible.
+// Keep PDF.js compatible with browsers that do not yet expose this Map helper.
 if (!Map.prototype.getOrInsertComputed) {
   Object.defineProperty(Map.prototype, 'getOrInsertComputed', {
     value(key, createValue) {

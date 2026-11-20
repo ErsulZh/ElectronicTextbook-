@@ -13,10 +13,6 @@ playwright-report/
 qa-source-docx/
 *.log
 
-# Obsolete local QA artefacts from the Electron version
-qa-book.png
-qa-report.json
-
 # Operating system and editor files
 .DS_Store
 Thumbs.db
