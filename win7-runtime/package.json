@@ -1,0 +1,14 @@
+{
+  "name": "electronic-textbook-win7-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Isolated browser and parser dependencies for the Windows 7 compatibility launcher",
+  "dependencies": {
+    "@xmldom/xmldom": "0.8.15",
+    "jszip": "3.10.1",
+    "mammoth": "1.11.0",
+    "markdown-it": "13.0.2",
+    "page-flip": "2.0.7",
+    "pdfjs-dist": "4.2.67"
+  }
+}

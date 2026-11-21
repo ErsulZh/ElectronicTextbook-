@@ -2,21 +2,23 @@
 
 const http = require('http');
 const fs = require('fs');
-const fsp = require('fs/promises');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
-const { Transform } = require('stream');
-const { pipeline } = require('stream/promises');
+const { Transform, pipeline } = require('stream');
 const { execFile } = require('child_process');
-const { promisify } = require('util');
-const mammoth = require('mammoth');
-const JSZip = require('jszip');
-const { DOMParser } = require('@xmldom/xmldom');
-const MarkdownIt = require('markdown-it');
+const { promisify, TextDecoder } = require('util');
+const ROOT = __dirname;
+const WIN7_RUNTIME = process.env.TEXTBOOK_WIN7_RUNTIME === '1';
+const NODE_MODULES_ROOT = WIN7_RUNTIME ? path.join(ROOT, 'win7-runtime', 'node_modules') : path.join(ROOT, 'node_modules');
+const mammoth = require(path.join(NODE_MODULES_ROOT, 'mammoth'));
+const JSZip = require(path.join(NODE_MODULES_ROOT, 'jszip'));
+const { DOMParser } = require(path.join(NODE_MODULES_ROOT, '@xmldom', 'xmldom'));
+const MarkdownIt = require(path.join(NODE_MODULES_ROOT, 'markdown-it'));
 
 const execFileAsync = promisify(execFile);
-const ROOT = __dirname;
+const pipelineAsync = promisify(pipeline);
+const fsp = fs.promises;
 const PORT = process.env.PORT ? Number(process.env.PORT) : 4173;
 const MAX_FILE_SIZE = 250 * 1024 * 1024;
 const MAX_TOTAL_STORED_BYTES = 750 * 1024 * 1024;
@@ -31,7 +33,7 @@ const FORMAT_BY_EXTENSION = new Map(FORMAT_SUPPORT.flatMap(format => format.exte
 const SUPPORTED_EXTENSIONS = new Set(FORMAT_BY_EXTENSION.keys());
 const WORD_LAYOUT_EXTENSIONS = new Set(['.docx', '.docm', '.dotx', '.doc', '.dot', '.dotm', '.docb', '.rtf']);
 const uploads = new Map();
-const SESSION_TOKEN = crypto.randomBytes(32).toString('base64url');
+const SESSION_TOKEN = toBase64Url(crypto.randomBytes(32));
 let activeImports = 0;
 let wordAvailable;
 const markdown = new MarkdownIt({ html: false, linkify: false, typographer: true, breaks: false });
@@ -60,6 +62,10 @@ function securityHeaders() {
     'X-Content-Type-Options': 'nosniff',
     'Cache-Control': 'no-store'
   };
+}
+
+function toBase64Url(value) {
+  return value.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
 
 function sendJson(response, status, data) {
@@ -105,14 +111,15 @@ async function saveUpload(request, target) {
       else callback(null, chunk);
     }
   });
-  await pipeline(request, limiter, fs.createWriteStream(target, { flags: 'wx' }));
+  await pipelineAsync(request, limiter, fs.createWriteStream(target, { flags: 'wx' }));
   if (!received) throw new Error('Выбран пустой файл.');
   return received;
 }
 
 function isTrustedApiRequest(request) {
   const origin = request.headers.origin;
-  const activePort = typeof server?.address === 'function' && server.address()?.port ? server.address().port : PORT;
+  const address = server && typeof server.address === 'function' ? server.address() : null;
+  const activePort = address && address.port ? address.port : PORT;
   const expectedOrigin = `http://127.0.0.1:${activePort}`;
   return (!origin || origin === expectedOrigin) && request.headers['x-textbook-token'] === SESSION_TOKEN;
 }
@@ -131,8 +138,13 @@ async function cleanupUpload(id) {
   const record = uploads.get(id);
   if (!record) return false;
   uploads.delete(id);
-  await fsp.rm(record.workDir, { recursive: true, force: true }).catch(() => {});
+  await removeDirectory(record.workDir).catch(() => {});
   return true;
+}
+
+async function removeDirectory(directory) {
+  if (typeof fsp.rm === 'function') return fsp.rm(directory, { recursive: true, force: true });
+  return fsp.rmdir(directory, { recursive: true });
 }
 
 async function sweepExpiredUploads() {
@@ -159,7 +171,7 @@ async function verifyFileSignature(filePath, extension) {
 function validateArchive(zip, label) {
   const entries = Object.values(zip.files);
   if (entries.length > MAX_ARCHIVE_ENTRIES) throw new Error(`${label} содержит слишком много файлов.`);
-  const declaredSize = entries.reduce((size, entry) => size + Number(entry._data?.uncompressedSize || 0), 0);
+  const declaredSize = entries.reduce((size, entry) => size + Number((entry._data && entry._data.uncompressedSize) || 0), 0);
   if (declaredSize > MAX_ARCHIVE_UNCOMPRESSED_BYTES) throw new Error(`${label} слишком велик после распаковки.`);
 }
 
@@ -174,7 +186,7 @@ async function handleImport(request, response, url) {
   const declaredLength = Number(request.headers['content-length'] || 0);
   if (declaredLength + currentStoredBytes() > MAX_TOTAL_STORED_BYTES) return sendError(response, 507, 'Недостаточно места для ещё одной открытой книги.');
   activeImports += 1;
-  const id = crypto.randomUUID();
+  const id = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
   let workDir = null;
   try {
     workDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'electronic-textbook-web-'));
@@ -207,7 +219,7 @@ async function handleImport(request, response, url) {
     sendJson(response, 200, { id, name, extension, size, ...parsed });
   } catch (error) {
     await cleanupUpload(id);
-    if (workDir) await fsp.rm(workDir, { recursive: true, force: true }).catch(() => {});
+    if (workDir) await removeDirectory(workDir).catch(() => {});
     sendError(response, 422, error.message || 'Не удалось обработать файл.');
   } finally {
     activeImports -= 1;
@@ -280,7 +292,8 @@ function createDocumentModel(html, context) {
   let match;
   while ((match = blockPattern.exec(html))) {
     const fragment = match[0];
-    const tag = (/<([a-z0-9]+)/i.exec(fragment)?.[1] || 'p').toLowerCase();
+    const tagMatch = /<([a-z0-9]+)/i.exec(fragment);
+    const tag = ((tagMatch && tagMatch[1]) || 'p').toLowerCase();
     const text = cleanMarkupText(fragment);
     const type = /^h[1-6]$/.test(tag) ? 'heading'
       : tag === 'ul' || tag === 'ol' ? 'list'
@@ -291,7 +304,8 @@ function createDocumentModel(html, context) {
     if (text || type === 'image') blocks.push({ type, level: type === 'heading' ? Number(tag[1]) : undefined, text, html: fragment });
   }
   if (!blocks.length && cleanMarkupText(html)) blocks.push({ type: 'paragraph', text: cleanMarkupText(html), html: `<p>${escapeHtml(cleanMarkupText(html))}</p>` });
-  const title = blocks.find(block => block.type === 'heading')?.text || path.basename(context.name || 'Документ', path.extname(context.name || ''));
+  const firstHeading = blocks.find(block => block.type === 'heading');
+  const title = (firstHeading && firstHeading.text) || path.basename(context.name || 'Документ', path.extname(context.name || ''));
   return {
     version: 1,
     title,
@@ -299,7 +313,7 @@ function createDocumentModel(html, context) {
     blocks,
     assets: [...new Set([...html.matchAll(/\/api\/asset\/[^"'\s>]+/g)].map(match => match[0]))],
     tocHints: blocks.filter(block => block.type === 'heading').map(block => ({ title: block.text, level: block.level })),
-    notices: context.notices?.filter(Boolean) || [],
+    notices: (context.notices || []).filter(Boolean),
     capabilities: context.formatInfo || null
   };
 }
@@ -349,7 +363,8 @@ async function convertWordToHtml(inputPath, context) {
   const outputPath = path.join(htmlDir, 'document.html');
   await runWordConversion(inputPath, outputPath, 10);
   const html = await readHtmlFile(outputPath);
-  const body = /<body\b[^>]*>([\s\S]*?)<\/body>/i.exec(html)?.[1] || html;
+  const bodyMatch = /<body\b[^>]*>([\s\S]*?)<\/body>/i.exec(html);
+  const body = bodyMatch && bodyMatch[1] ? bodyMatch[1] : html;
   return rewriteOfficeAssetUrls(body, htmlDir, context.workDir, context.assetUrl);
 }
 
@@ -402,7 +417,8 @@ async function assertMicrosoftWordAvailable() {
 async function readHtmlFile(filePath) {
   const buffer = await fsp.readFile(filePath);
   const header = buffer.subarray(0, 8192).toString('latin1');
-  const declared = /charset\s*=\s*["']?([^"'\s;>]+)/i.exec(header)?.[1]?.toLowerCase();
+  const charsetMatch = /charset\s*=\s*["']?([^"'\s;>]+)/i.exec(header);
+  const declared = charsetMatch && charsetMatch[1] ? charsetMatch[1].toLowerCase() : undefined;
   const encodings = { 'windows-1251': 'windows-1251', cp1251: 'windows-1251', 'windows-1252': 'windows-1252', cp1252: 'windows-1252', utf8: 'utf-8', 'utf-8': 'utf-8', unicode: 'utf-16le', 'utf-16': 'utf-16le', 'utf-16le': 'utf-16le' };
   return decodeTextBuffer(buffer, encodings[declared]).text;
 }
@@ -446,7 +462,8 @@ function textToHtml(text) {
 async function parseOdt(filePath) {
   const zip = await JSZip.loadAsync(await fsp.readFile(filePath));
   validateArchive(zip, 'ODT');
-  const content = await zip.file('content.xml')?.async('text');
+  const contentFile = zip.file('content.xml');
+  const content = contentFile ? await contentFile.async('text') : null;
   if (!content) throw new Error('В ODT отсутствует content.xml.');
   const xml = new DOMParser().parseFromString(content, 'text/xml');
   const elements = Array.from(xml.getElementsByTagName('*')).filter(node => node.nodeName === 'text:h' || node.nodeName === 'text:p');
@@ -459,10 +476,13 @@ async function parseOdt(filePath) {
 async function parseEpub(filePath) {
   const zip = await JSZip.loadAsync(await fsp.readFile(filePath));
   validateArchive(zip, 'EPUB');
-  const container = await zip.file('META-INF/container.xml')?.async('text');
-  const opfPath = /full-path=["']([^"']+)["']/.exec(container || '')?.[1];
+  const containerFile = zip.file('META-INF/container.xml');
+  const container = containerFile ? await containerFile.async('text') : null;
+  const opfPathMatch = /full-path=["']([^"']+)["']/.exec(container || '');
+  const opfPath = opfPathMatch && opfPathMatch[1];
   if (!opfPath) throw new Error('Не удалось прочитать структуру EPUB.');
-  const opf = await zip.file(opfPath)?.async('text');
+  const opfFile = zip.file(opfPath);
+  const opf = opfFile ? await opfFile.async('text') : null;
   if (!opf) throw new Error('В EPUB отсутствует пакет книги.');
   const manifest = new Map([...opf.matchAll(/<item\b[^>]*id=["']([^"']+)["'][^>]*href=["']([^"']+)["'][^>]*>/g)].map(match => [match[1], match[2]]));
   const root = path.posix.dirname(opfPath);
@@ -472,11 +492,14 @@ async function parseEpub(filePath) {
     const href = manifest.get(id);
     const chapterPath = href && path.posix.normalize(path.posix.join(root, href));
     const chapter = chapterPath && zip.file(chapterPath) ? await zip.file(chapterPath).async('text') : '';
-    const body = /<body\b[^>]*>([\s\S]*?)<\/body>/i.exec(chapter)?.[1] || '';
+    const bodyMatch = /<body\b[^>]*>([\s\S]*?)<\/body>/i.exec(chapter);
+    const body = bodyMatch && bodyMatch[1] ? bodyMatch[1] : '';
     const plain = body.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-    const title = /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(chapter)?.[1]?.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
-      || /<h1\b[^>]*>([\s\S]*?)<\/h1>/i.exec(body)?.[1]?.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
-      || `Глава ${index + 1}`;
+    const titleMatch = /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(chapter);
+    const headingMatch = /<h1\b[^>]*>([\s\S]*?)<\/h1>/i.exec(body);
+    const documentTitle = titleMatch && titleMatch[1] ? titleMatch[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : '';
+    const headingTitle = headingMatch && headingMatch[1] ? headingMatch[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : '';
+    const title = documentTitle || headingTitle || `Глава ${index + 1}`;
     if (plain) chapters.push(`<h1>${escapeHtml(title)}</h1>${textToHtml(plain)}`);
   }
   return chapters.join('') || '<p>В EPUB не найден текст.</p>';
@@ -486,8 +509,13 @@ async function serveStatic(request, response, pathname) {
   const relative = pathname === '/' ? 'src/index.html' : pathname.replace(/^\//, '');
   const allowed = relative.startsWith('src/') || relative.startsWith('node_modules/pdfjs-dist/') || relative.startsWith('node_modules/page-flip/');
   if (!allowed) return sendError(response, 404, 'Страница не найдена.');
-  const filePath = path.resolve(ROOT, relative);
-  if (!isInside(ROOT, filePath)) return sendError(response, 403, 'Доступ запрещён.');
+  const requestedModule = relative.startsWith('node_modules/');
+  const staticRoot = requestedModule ? NODE_MODULES_ROOT : ROOT;
+  let staticRelative = requestedModule ? relative.slice('node_modules/'.length) : relative;
+  // PDF.js legacy build is transpiled for the browser generation still available on Windows 7.
+  if (WIN7_RUNTIME && staticRelative.startsWith('pdfjs-dist/build/')) staticRelative = staticRelative.replace(/^pdfjs-dist\/build\//, 'pdfjs-dist/legacy/build/');
+  const filePath = path.resolve(staticRoot, staticRelative);
+  if (!isInside(staticRoot, filePath)) return sendError(response, 403, 'Доступ запрещён.');
   try { await streamFile(request, response, filePath); } catch (_) { sendError(response, 404, 'Файл не найден.'); }
 }
 
@@ -509,7 +537,7 @@ const server = http.createServer(async (request, response) => {
     }
     if (request.method === 'GET' && /^\/api\/rendered\/[^/]+$/.test(url.pathname)) {
       const record = getUpload(url.pathname.split('/').pop());
-      if (!record?.renderedPdfPath) return sendError(response, 404, 'Точный вид документа больше недоступен.');
+      if (!record || !record.renderedPdfPath) return sendError(response, 404, 'Точный вид документа больше недоступен.');
       return streamFile(request, response, record.renderedPdfPath, true);
     }
     if (request.method === 'GET' && url.pathname.startsWith('/api/asset/')) {
