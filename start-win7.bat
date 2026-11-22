@@ -2,12 +2,13 @@
 setlocal EnableExtensions
 cd /d "%~dp0"
 
-where node >nul 2>nul
+call "%~dp0ensure-node.bat" win7
 if errorlevel 1 (
-  echo Node.js was not found. Install a Windows 7 compatible Node.js 13.6 or newer first.
+  echo Node.js could not be prepared automatically.
   pause
   exit /b 1
 )
+set "PATH=%TEXTBOOK_NODE_DIR%;%PATH%"
 
 if not exist "win7-runtime\node_modules\mammoth\package.json" (
   echo Windows 7 runtime is not installed. Starting the installer...
@@ -21,5 +22,5 @@ if not exist "win7-runtime\node_modules\mammoth\package.json" (
 
 set "TEXTBOOK_WIN7_RUNTIME=1"
 set "NODE_PATH=%~dp0win7-runtime\node_modules"
-node server.js
+"%TEXTBOOK_NODE_EXE%" server.js
 if errorlevel 1 pause

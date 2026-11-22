@@ -2,12 +2,13 @@
 setlocal EnableExtensions
 cd /d "%~dp0"
 
-where node >nul 2>nul
+call "%~dp0ensure-node.bat" modern
 if errorlevel 1 (
-  echo Node.js was not found. Install Node.js 22.13 or newer, then run this file again.
+  echo Node.js could not be prepared automatically.
   pause
   exit /b 1
 )
+set "PATH=%TEXTBOOK_NODE_DIR%;%PATH%"
 
 if not exist "node_modules\mammoth\package.json" (
   echo Site dependencies are not installed. Starting the installer...
@@ -19,5 +20,5 @@ if not exist "node_modules\mammoth\package.json" (
   )
 )
 
-node server.js
+"%TEXTBOOK_NODE_EXE%" server.js
 if errorlevel 1 pause
