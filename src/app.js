@@ -846,7 +846,6 @@ function filterToc() {
 function createBook({ preservePage = false } = {}) {
   const currentPage = preservePage ? pageFlip?.getCurrentPageIndex?.() || 0 : 0;
   const oldBook = $('#book'); const bookStage = oldBook.parentElement; const book = document.createElement('div'); book.id = 'book';
-  bookStage.classList.remove('is-page-turning');
   if (pageFlip) {
     try { pageFlip.destroy(); } catch (error) { console.warn('Не удалось корректно закрыть предыдущую книгу:', error); }
   }
@@ -866,13 +865,14 @@ function createBook({ preservePage = false } = {}) {
     mobileScrollSupport: true, swipeDistance: 25, startZIndex: 5, disableFlipByClick: false
   });
   pageFlip.loadFromHTML(leaves);
+  // Keep the visual crease in PageFlip's own stacking context: static pages are
+  // below it, while the moving leaf and its dynamic shadow are above it.
+  const spine = document.createElement('div');
+  spine.className = 'book-spine';
+  spine.setAttribute('aria-hidden', 'true');
+  book.querySelector('.stf__block')?.append(spine);
   renderedPdfPages.clear();
   pageFlip.on('flip', event => { updateReaderState(event.data); ensurePdfPagesAround(event.data, leaves); });
-  pageFlip.on('changeState', event => {
-    // The stationary centre crease is decorative. Hide it while PageFlip draws
-    // the moving sheet so it never cuts across the animated page.
-    bookStage.classList.toggle('is-page-turning', event.data !== 'read');
-  });
   const target = Math.min(currentPage, Math.max(0, pages.length - 1));
   if (target) pageFlip.turnToPage(target);
   updateReaderState(target);

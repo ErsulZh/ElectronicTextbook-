@@ -225,12 +225,36 @@ async function main() {
     const pdfStart = await pageCounter(page);
     assert.ok(pdfStart.total > 1, 'Реальный PDF не содержит нескольких страниц.');
     assert.equal(pdfStart.current, 1, 'PDF должен открываться с первой страницы.');
+    const spineAtRest = await page.locator('.book-spine').evaluate(spine => {
+      const style = getComputedStyle(spine);
+      return { visibility: style.visibility, opacity: Number(style.opacity), zIndex: Number(style.zIndex) };
+    });
+    assert.deepEqual(spineAtRest, { visibility: 'visible', opacity: 0.84, zIndex: 7 }, 'Сгиб книги не отображается в состоянии чтения.');
+    const bookBox = await page.locator('#book').boundingBox();
+    assert.ok(bookBox, 'Не удалось получить размер книги для проверки перетягивания листа.');
+    await page.mouse.move(bookBox.x + bookBox.width - 3, bookBox.y + bookBox.height - 3);
+    await page.mouse.down();
+    await page.mouse.move(bookBox.x + bookBox.width - 72, bookBox.y + bookBox.height - 68);
+    await page.waitForTimeout(40);
+    const spineWhileDragging = await page.locator('.book-spine').evaluate(spine => {
+      const style = getComputedStyle(spine);
+      return { visibility: style.visibility, opacity: Number(style.opacity) };
+    });
+    assert.deepEqual(spineWhileDragging, { visibility: 'visible', opacity: 0.84 }, 'Сгиб ошибочно исчезает при захвате листа.');
+    await page.mouse.up();
+    await page.waitForTimeout(900);
     await page.locator('#tocToggle').focus();
     await page.keyboard.press('ArrowRight');
     await page.waitForTimeout(40);
-    assert.equal(await page.locator('.book-stage').evaluate(stage => stage.classList.contains('is-page-turning')), true, 'Стационарный сгиб не скрывается во время перелистывания.');
+    const turnLayers = await page.evaluate(() => {
+      const spine = document.querySelector('.book-spine');
+      const style = spine ? getComputedStyle(spine) : null;
+      const highestPageZ = Math.max(...[...document.querySelectorAll('.book-page')].map(page => Number(getComputedStyle(page).zIndex) || 0));
+      return { hasSpine: Boolean(spine), visibility: style?.visibility, spineZ: Number(style?.zIndex), highestPageZ };
+    });
+    assert.deepEqual(turnLayers, { hasSpine: true, visibility: 'visible', spineZ: 7, highestPageZ: 10 }, 'Перелистываемый лист должен находиться выше сгиба, не скрывая его полностью.');
     await page.waitForTimeout(900);
-    assert.equal(await page.locator('.book-stage').evaluate(stage => stage.classList.contains('is-page-turning')), false, 'Стационарный сгиб не вернулся после перелистывания.');
+    assert.equal(await page.locator('.book-spine').evaluate(spine => getComputedStyle(spine).visibility), 'visible', 'Сгиб пропал после перелистывания.');
     assert.ok((await pageCounter(page)).current > pdfStart.current, 'Стрелка клавиатуры не листает реальный PDF.');
     const targetPdfPage = Math.min(10, pdfStart.total);
     for (let attempts = 0; attempts < 6 && (await pageCounter(page)).lastVisible < targetPdfPage; attempts++) await flipNextWithKeyboard(page);

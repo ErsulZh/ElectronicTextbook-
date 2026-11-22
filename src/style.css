@@ -199,12 +199,11 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
 .toc-toggle { position: absolute; top: 18px; left: 20px; z-index: 4; min-height: 36px; padding: 7px 12px; border: 1px solid #d9cfbe; border-radius: 9px; color: #365448; background: #faf7f0e8; box-shadow: 0 3px 8px #5a45351a; font-size: 11px; font-weight: 800; cursor: pointer; }
 .toc-toggle:hover { background: #fffdf7; }
 .book-stage { position: relative; z-index: 1; display: grid; place-items: center; width: fit-content; min-height: 0; max-width: 100%; }
-.book-stage::before { content: ''; position: absolute; z-index: 7; top: 1px; bottom: 1px; left: 50%; width: 19px; transform: translateX(-50%); pointer-events: none; background: linear-gradient(90deg, rgba(67, 47, 31, .27), rgba(77, 55, 35, .07) 31%, rgba(255,255,255,.16) 52%, rgba(65, 46, 31, .10) 75%, rgba(57, 40, 27, .31)); box-shadow: -9px 0 13px -10px rgba(49, 30, 16, .95), 9px 0 13px -10px rgba(49, 30, 16, .95); opacity: .84; }
-.book-stage::after { content: ''; position: absolute; z-index: 8; top: 2px; bottom: 2px; left: 50%; width: 1px; transform: translateX(-50%); pointer-events: none; background: rgba(56, 38, 23, .36); }
-.book-stage.is-page-turning::before, .book-stage.is-page-turning::after { visibility: hidden; opacity: 0; }
 #book { display: block; filter: drop-shadow(0 20px 20px #543f2e4d); }
 .stf__parent { margin: auto; }
 .stf__item { box-shadow: inset 0 0 0 1px #d7ccbd; }
+.book-spine { position: absolute; z-index: 7; top: 1px; bottom: 1px; left: 50%; width: 19px; transform: translateX(-50%); pointer-events: none; background: linear-gradient(90deg, rgba(67, 47, 31, .27), rgba(77, 55, 35, .07) 31%, rgba(255,255,255,.16) 52%, rgba(65, 46, 31, .10) 75%, rgba(57, 40, 27, .31)); box-shadow: -9px 0 13px -10px rgba(49, 30, 16, .95), 9px 0 13px -10px rgba(49, 30, 16, .95); opacity: .84; }
+.book-spine::after { content: ''; position: absolute; top: 1px; bottom: 1px; left: 50%; width: 1px; transform: translateX(-50%); background: rgba(56, 38, 23, .36); }
 .book-page { width: 100%; height: 100%; padding: 38px 44px 82px; position: relative; overflow: hidden; color: #303b33; background: linear-gradient(90deg, #f0e9dd 0%, #fffdf7 10%, #fffdf7 89%, #eee5d8 100%); }
 .book-page::before { content: ''; position: absolute; z-index: 0; top: 0; bottom: 0; left: 0; width: 11px; background: linear-gradient(90deg, #c9baa2aa, #fbf8f077); }
 .book-content { position: relative; z-index: 1; height: 100%; overflow: hidden; }
@@ -273,7 +272,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
   .book-page h1 { font-size: 26px; }
   .book-page h2 { font-size: 20px; }
   .book-page p, .book-page li { font-size: 12.5px; line-height: 1.58; }
-  .book-stage::before, .book-stage::after { display: none; }
+  .book-spine { display: none; }
 }
 @media (max-width: 400px) {
   .feature-list span { padding: 7px 9px; }
