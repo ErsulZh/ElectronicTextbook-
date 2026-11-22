@@ -12,6 +12,7 @@ const browserPath = process.env.TEXTBOOK_BROWSER_PATH || [
   'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
 ].find(candidate => fs.existsSync(candidate));
 const sourceFile = path.join(process.cwd(), 'Тест', 'Казакша электр аппараттары КІТАП 27.10.docx');
+const noContentsWordFile = path.join(process.cwd(), 'Тест', 'Лекция 1.docx');
 const pdfFile = path.join(process.cwd(), 'Тест', 'УМКД Android -де мобильді қосымшаларды әзірлеу 03.09.2026.pdf');
 const contentsFixture = path.join(process.cwd(), 'fixtures', 'pagination-contents.html');
 const semanticsFixture = path.join(process.cwd(), 'fixtures', 'pagination-semantics.html');
@@ -134,7 +135,7 @@ function assertPrintedContentsTopics(report, label) {
 
 async function main() {
   if (!browserPath || !fs.existsSync(browserPath)) throw new Error('Не найден Chromium-браузер. Укажите TEXTBOOK_BROWSER_PATH или установите Edge, Chrome либо Brave.');
-  for (const file of [sourceFile, pdfFile, contentsFixture, semanticsFixture]) {
+  for (const file of [sourceFile, noContentsWordFile, pdfFile, contentsFixture, semanticsFixture]) {
     if (!fs.existsSync(file)) throw new Error(`Нет файла для browser-теста: ${file}`);
   }
   const server = await startServer();
@@ -185,6 +186,11 @@ async function main() {
     const jumpIndexes = [...new Set([0, 1, 2, Math.floor(report.topics.length / 2), report.topics.length - 1])].filter(index => index >= 0 && index < report.topics.length);
     await assertTocNavigation(page, jumpIndexes);
 
+    await importPdfAndWait(page, noContentsWordFile);
+    await page.locator('#importNotice').waitFor({ state: 'visible' });
+    assert.match(await page.locator('#importNotice').textContent(), /Не найдено напечатанное содержание/, 'Для Word без содержания не показано пояснение.');
+    await page.locator('#importNotice').waitFor({ state: 'hidden', timeout: 6_500 });
+
     await page.setViewportSize({ width: 390, height: 844 });
     await page.waitForTimeout(1_100);
     const mobileReport = await readerReport(page);
@@ -219,7 +225,12 @@ async function main() {
     const pdfStart = await pageCounter(page);
     assert.ok(pdfStart.total > 1, 'Реальный PDF не содержит нескольких страниц.');
     assert.equal(pdfStart.current, 1, 'PDF должен открываться с первой страницы.');
-    await flipNextWithKeyboard(page);
+    await page.locator('#tocToggle').focus();
+    await page.keyboard.press('ArrowRight');
+    await page.waitForTimeout(40);
+    assert.equal(await page.locator('.book-stage').evaluate(stage => stage.classList.contains('is-page-turning')), true, 'Стационарный сгиб не скрывается во время перелистывания.');
+    await page.waitForTimeout(900);
+    assert.equal(await page.locator('.book-stage').evaluate(stage => stage.classList.contains('is-page-turning')), false, 'Стационарный сгиб не вернулся после перелистывания.');
     assert.ok((await pageCounter(page)).current > pdfStart.current, 'Стрелка клавиатуры не листает реальный PDF.');
     const targetPdfPage = Math.min(10, pdfStart.total);
     for (let attempts = 0; attempts < 6 && (await pageCounter(page)).lastVisible < targetPdfPage; attempts++) await flipNextWithKeyboard(page);

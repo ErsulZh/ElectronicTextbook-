@@ -18,7 +18,7 @@ const cleanText = value => value.replace(/\s+/g, ' ').trim();
 let supportedExtensions = new Set(['.pdf', '.docx', '.docm', '.dotx', '.dotm', '.doc', '.dot', '.docb', '.odt', '.rtf', '.txt', '.md', '.html', '.htm', '.epub']);
 let formatByExtension = new Map(), serverCapabilities = null;
 let pages = [], toc = [], pageFlip = null, importing = false, sourceBlocks = [], documentLayout = null, documentTocHints = [];
-let importNotices = [], resizeTimer = null;
+let importNotices = [], resizeTimer = null, importNoticeTimer = null, importNoticeHideTimer = null;
 const renderedPdfPages = new Set();
 let sessionToken = null, currentImportId = null;
 let activePdf = null;
@@ -815,8 +815,25 @@ function renderToc() {
 function renderImportNotice() {
   const notice = $('#importNotice');
   const messages = [...new Set(importNotices)].slice(0, 2);
-  notice.hidden = !messages.length;
-  notice.textContent = messages.length ? messages.join(' ') : '';
+  clearTimeout(importNoticeTimer);
+  clearTimeout(importNoticeHideTimer);
+  notice.classList.remove('is-dismissing');
+  if (!messages.length) {
+    notice.hidden = true;
+    notice.textContent = '';
+    return;
+  }
+
+  notice.hidden = false;
+  notice.textContent = messages.join(' ');
+  // Import notices are useful confirmation, but must not cover the book while reading.
+  importNoticeTimer = window.setTimeout(() => {
+    notice.classList.add('is-dismissing');
+    importNoticeHideTimer = window.setTimeout(() => {
+      notice.hidden = true;
+      notice.classList.remove('is-dismissing');
+    }, 220);
+  }, 5_000);
 }
 
 function filterToc() {
@@ -829,6 +846,7 @@ function filterToc() {
 function createBook({ preservePage = false } = {}) {
   const currentPage = preservePage ? pageFlip?.getCurrentPageIndex?.() || 0 : 0;
   const oldBook = $('#book'); const bookStage = oldBook.parentElement; const book = document.createElement('div'); book.id = 'book';
+  bookStage.classList.remove('is-page-turning');
   if (pageFlip) {
     try { pageFlip.destroy(); } catch (error) { console.warn('Не удалось корректно закрыть предыдущую книгу:', error); }
   }
@@ -850,6 +868,11 @@ function createBook({ preservePage = false } = {}) {
   pageFlip.loadFromHTML(leaves);
   renderedPdfPages.clear();
   pageFlip.on('flip', event => { updateReaderState(event.data); ensurePdfPagesAround(event.data, leaves); });
+  pageFlip.on('changeState', event => {
+    // The stationary centre crease is decorative. Hide it while PageFlip draws
+    // the moving sheet so it never cuts across the animated page.
+    bookStage.classList.toggle('is-page-turning', event.data !== 'read');
+  });
   const target = Math.min(currentPage, Math.max(0, pages.length - 1));
   if (target) pageFlip.turnToPage(target);
   updateReaderState(target);
